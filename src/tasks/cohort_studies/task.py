@@ -546,7 +546,27 @@ class CohortStudiesTask(ContinualLearningTask):
 
         obs_text = f"Report submitted for {inst.study_name}."
 
-        return self._advance_to_next(obs_text, record)
+        # Expose the now-revealed survival ground truth so a post-commit best-of-N
+        # learner can score candidate reports on the same signal the official
+        # protocol grades (no held-out leakage; the instance is already scored).
+        cohort_gt = {}
+        for c in ALL_COHORTS:
+            gte = self._ground_truth.get(c.id) if self._ground_truth else None
+            if gte:
+                cohort_gt[c.id] = {
+                    "cohort_id": gte.cohort_id,
+                    "survival_12m": gte.survival_12m,
+                    "survival_24m": gte.survival_24m,
+                    "survival_36m": gte.survival_36m,
+                    "n_patients": gte.n_patients,
+                    "type_mixture": {},
+                }
+        ref = self._get_current_ref_survival()
+        extra_metadata = {
+            "cohort_gt": cohort_gt,
+            "ref_survival": list(ref) if ref else None,
+        }
+        return self._advance_to_next(obs_text, record, extra_metadata=extra_metadata)
 
     def _score_submission(self, estimates: list[dict[str, Any]]) -> CohortScoreResult:
         gt_for_scorer = {}
@@ -625,7 +645,10 @@ class CohortStudiesTask(ContinualLearningTask):
         return outcome
 
     def _advance_to_next(
-        self, obs_text: str, outcome: InstanceOutcome
+        self,
+        obs_text: str,
+        outcome: InstanceOutcome,
+        extra_metadata: dict[str, Any] | None = None,
     ) -> TaskStepResult:
         if self._executor:
             self._executor.conn.close()
@@ -638,6 +661,7 @@ class CohortStudiesTask(ContinualLearningTask):
                 observation=Observation(
                     content=obs_text + "\n\nAll study instances completed!",
                     instance_complete=True,
+                    metadata=extra_metadata,
                 ),
                 next_query=None,
                 done=True,
@@ -652,7 +676,9 @@ class CohortStudiesTask(ContinualLearningTask):
         )
 
         return TaskStepResult(
-            observation=Observation(content=obs_text, instance_complete=True),
+            observation=Observation(
+                content=obs_text, instance_complete=True, metadata=extra_metadata
+            ),
             next_query=next_query,
             done=False,
             instance_outcome=outcome,

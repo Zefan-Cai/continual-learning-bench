@@ -1057,7 +1057,22 @@ class BlindSpectrumMonitoringTask(ContinualLearningTask):
         else:
             obs_text = self._render_feedback(scan)
 
-        return self._advance(obs_text, instance_outcome)
+        # Expose the now-revealed long-run available spectrum (interval set) so a
+        # post-commit best-of-N learner can score candidate reports with the SAME
+        # IoU the task grades on (pure function of report + revealed GT).
+        gt_occupied = _normalize_intervals(
+            [
+                _interval_bounds(ch.center_freq(self.W, self.G), ch.bandwidth(self.W))
+                for ch in all_latent
+            ],
+            band_end=self.band_width,
+        )
+        gt_available = _complement_intervals(gt_occupied, band_end=self.band_width)
+        extra_metadata = {
+            "bsm_gt_available": [list(iv) for iv in gt_available],
+            "bsm_band_width": self.band_width,
+        }
+        return self._advance(obs_text, instance_outcome, extra_metadata=extra_metadata)
 
     def _render_feedback(self, scan: ScanInstance) -> str:
         """Minimal acknowledgment — no per-region correctness feedback."""
@@ -1090,7 +1105,10 @@ class BlindSpectrumMonitoringTask(ContinualLearningTask):
         return self._advance(obs, instance_outcome)
 
     def _advance(
-        self, obs_text: str, instance_outcome: InstanceOutcome
+        self,
+        obs_text: str,
+        instance_outcome: InstanceOutcome,
+        extra_metadata: dict[str, Any] | None = None,
     ) -> TaskStepResult:
         self._current_idx += 1
 
@@ -1100,6 +1118,7 @@ class BlindSpectrumMonitoringTask(ContinualLearningTask):
                 observation=Observation(
                     content=obs_text + "\n\nAll scans completed!",
                     instance_complete=True,
+                    metadata=extra_metadata,
                 ),
                 next_query=None,
                 done=True,
@@ -1114,6 +1133,7 @@ class BlindSpectrumMonitoringTask(ContinualLearningTask):
             observation=Observation(
                 content=obs_text,
                 instance_complete=True,
+                metadata=extra_metadata,
             ),
             next_query=self._make_scan_query(),
             done=False,

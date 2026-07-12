@@ -47,6 +47,7 @@ def _run_baseline_instance(
     system_name: str,
     task_name: str,
     verbose: bool = False,
+    system: ContinualLearningSystem | None = None,
 ) -> tuple[int, TaskResult, dict[str, Any]]:
     """Worker: run a single baseline instance in its own isolated process.
 
@@ -56,7 +57,7 @@ def _run_baseline_instance(
     filtered_params = filter_init_params(task_class, task_params)
     task = task_class(**filtered_params)
     initial_query = task.reset_baseline_instance(instance_index)
-    system = system_class(**system_params)
+    system = system if system is not None else system_class(**system_params)
     task_brief = task.get_agent_brief()
 
     trace_task_params = dict(filtered_params)
@@ -405,6 +406,11 @@ def run_baseline(
             task_class.__name__,
         )
         completed_so_far: list[BaselineSuccess] = []
+        reusable_system = (
+            system_class(**system_params)
+            if getattr(system_class, "reuse_across_baseline_instances", False)
+            else None
+        )
         for i in range(num_instances):
             try:
                 logger.info(
@@ -421,6 +427,7 @@ def run_baseline(
                     system_name=system_name,
                     task_name=task_name,
                     verbose=verbose,
+                    system=reusable_system,
                 )
                 refusal: ProviderRefusalError | None = None
             except ProviderRefusalError as exc:

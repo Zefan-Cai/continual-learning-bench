@@ -596,6 +596,21 @@ class ContinualLearningSystem(ABC):
     would clash across simultaneous instances.
     """
 
+    def set_parameter_updates_enabled(self, enabled: bool) -> None:
+        """Enable or freeze learned-parameter updates for the current phase.
+
+        The runtime freezes systems during baseline evaluation. Implementations
+        with trainable state should consult :attr:`parameter_updates_enabled`
+        before every update path. Systems without trainable parameters can
+        safely inherit this no-op-compatible state hook.
+        """
+        self._parameter_updates_enabled = bool(enabled)
+
+    @property
+    def parameter_updates_enabled(self) -> bool:
+        """Whether the runtime currently permits learned-parameter updates."""
+        return bool(getattr(self, "_parameter_updates_enabled", True))
+
     @abstractmethod
     def respond(self, query: Query) -> Response:
         """

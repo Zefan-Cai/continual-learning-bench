@@ -487,6 +487,44 @@ class TraceRecorder:
                 }
             ),
         }
+        # Keep the terminal GRPO evidence in the canonical live manifest. Full
+        # system artifacts are intentionally sidecar-only, but the production
+        # sweep uploads live/<cfg>/ and must retain enough structured evidence to
+        # prove whether parameter updates actually occurred. The opt-in check
+        # preserves byte-identical manifests for every existing/default rule.
+        if (
+            isinstance(self.system_artifacts, dict)
+            and self.system_artifacts.get("reward_update_rule")
+            in {"grpo_instance", "group_pg_instance"}
+        ):
+            update_keys = (
+                "reward_update_rule",
+                "parameter_updates_enabled",
+                "freeze_parameter_updates",
+                "grpo_frozen_stream",
+                "grpo_objective",
+                "grpo_run_seed",
+                "grpo_updates",
+                "grpo_optimizer_steps",
+                "grpo_skipped_low_std",
+                "grpo_skipped_no_group",
+                "last_grpo_loss",
+                "last_grpo_group_size",
+                "last_grpo_reward_mean",
+                "last_grpo_reward_std",
+                "last_grpo_committed_reward",
+                "reward_pg_updates",
+                "bon_updates",
+                "distill_updates",
+                "adaptation_count",
+            )
+            payload["system_update_metrics"] = {
+                key: self.system_artifacts.get(key) for key in update_keys
+            }
+            grpo_log = self.system_artifacts.get("grpo_instance_log")
+            payload["system_update_metrics"]["grpo_instance_log"] = (
+                list(grpo_log) if isinstance(grpo_log, list) else []
+            )
         return payload
 
     def write_live_snapshot(

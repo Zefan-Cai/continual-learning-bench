@@ -801,6 +801,27 @@ class SalesPredictionTask(ContinualLearningTask):
 
     def _start_container(self) -> None:
         self._cleanup_container()
+        import os as _os
+
+        # Pluto pods have no runnable Docker (securityContext blocks runc). When
+        # CLBENCH_USE_APPTAINER is set, use apptainer --sandbox (unprivileged user
+        # namespace, no FUSE/fakeroot) via mini-swe-agent's SingularityEnvironment.
+        if _os.getenv("CLBENCH_USE_APPTAINER"):
+            from minisweagent.environments.singularity import SingularityEnvironment
+
+            self._env = SingularityEnvironment(
+                image=_os.environ.get("CLBENCH_SALES_SANDBOX", "/mnt/localssd/sales_sb"),
+                cwd="/app",
+                timeout=120,
+                executable=_os.environ.get("MSWEA_SINGULARITY_EXECUTABLE", "apptainer"),
+                global_args=["--quiet"],
+                # drop --fakeroot (no newuidmap on the pod); --writable persists
+                # cross-command state into this env's private sandbox copy.
+                exec_args=["--contain", "--cleanenv", "--writable"],
+            )
+            logger.info("Started sales prediction apptainer sandbox")
+            return
+
         from minisweagent.environments.docker import DockerEnvironment
 
         self._env = DockerEnvironment(
@@ -1175,10 +1196,29 @@ class SalesPredictionTask(ContinualLearningTask):
             f"Composite score: {elapsed_year_feedback.score:.3f}."
         )
 
-        return self._advance_to_next(obs_msg, outcome)
+        # Expose the now-revealed near-year ground truth so a post-commit
+        # best-of-N learner can score candidates on the SAME signal the official
+        # protocol reveals (near year only; never the held-out forecast horizon).
+        nearyear_gt = [
+            row for row in gt if int(row.get("year", -1)) == int(inst.target_year)
+        ]
+        # full-horizon GT (all forecast years) for the "final"/"both" reward forms.
+        # This is the held-out horizon, used only by an opt-in best-of-N learner that
+        # deliberately trades the strict near-year-only protocol for a denser signal.
+        extra_metadata = {
+            "nearyear": inst.target_year,
+            "nearyear_gt": nearyear_gt,
+            "final_gt": list(gt),
+            "final_years": list(inst.forecast_years),
+        }
+
+        return self._advance_to_next(obs_msg, outcome, extra_metadata=extra_metadata)
 
     def _advance_to_next(
-        self, obs_text: str, outcome: InstanceOutcome
+        self,
+        obs_text: str,
+        outcome: InstanceOutcome,
+        extra_metadata: dict[str, Any] | None = None,
     ) -> TaskStepResult:
         self.current_instance_idx += 1
         self.current_steps = 0
@@ -1188,6 +1228,7 @@ class SalesPredictionTask(ContinualLearningTask):
                 observation=Observation(
                     content=obs_text + "\n\nAll prediction instances completed!",
                     instance_complete=True,
+                    metadata=extra_metadata,
                 ),
                 next_query=None,
                 done=True,
@@ -1201,7 +1242,11 @@ class SalesPredictionTask(ContinualLearningTask):
             f"{len(self.instances)}..."
         )
         return TaskStepResult(
-            observation=Observation(content=obs_text, instance_complete=True),
+            observation=Observation(
+                content=obs_text,
+                instance_complete=True,
+                metadata=extra_metadata,
+            ),
             next_query=self._next_query(),
             done=False,
             instance_outcome=outcome,

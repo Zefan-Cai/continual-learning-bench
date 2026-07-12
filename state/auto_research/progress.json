@@ -1,0 +1,8 @@
+{
+  "active_probe": "d2_grpo_v5_cohort_stream",
+  "status": "cpu_validated",
+  "next_gate": "five_instance_gpu_smoke",
+  "baseline": "matched full-history frozen_stream with identical task and run seeds",
+  "primary_metric": "trajectory-level paired mean and median reward delta",
+  "success_threshold": 0.03
+}

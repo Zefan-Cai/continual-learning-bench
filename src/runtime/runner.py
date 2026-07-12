@@ -6,14 +6,18 @@ from __future__ import annotations
 
 from datetime import datetime
 import logging
+import os
+import signal
+import threading
 import time
-from typing import Any, Optional
+from typing import Any, Optional, get_origin
 
 from ..errors import ProviderRefusalError
 from ..interface import (
     ContinualLearningSystem,
     ContinualLearningTask,
     InstanceOutcome,
+    Observation,
     instance_outcome_identity,
     observation_marks_instance_complete,
     Query,
@@ -125,9 +129,56 @@ def _copy_latest_outcome(
     }
 
 
+def _attach_env_feedback_metadata(
+    observation: Observation,
+    outcome: Optional[InstanceOutcome],
+) -> None:
+    """Expose the current harness reward under env-only metadata keys."""
+    if outcome is None:
+        return
+
+    metadata = dict(observation.metadata or {})
+    metadata["env_feedback_reward"] = float(outcome.reward)
+    metadata["env_feedback_instance_id"] = outcome.instance_id
+    metadata["env_feedback_instance_index"] = outcome.instance_index
+    if outcome.success is not None:
+        metadata["env_feedback_success"] = bool(outcome.success)
+    if outcome.raw_metric_name is not None:
+        metadata["env_feedback_raw_metric_name"] = outcome.raw_metric_name
+    if outcome.raw_metric_value is not None:
+        metadata["env_feedback_raw_metric_value"] = outcome.raw_metric_value
+    if outcome.raw_metric_higher_is_better is not None:
+        metadata["env_feedback_raw_metric_higher_is_better"] = (
+            outcome.raw_metric_higher_is_better
+        )
+    observation.metadata = metadata
+
+
+class _InstanceTimeout(RuntimeError):
+    """Raised when a single system.respond exceeds CLBENCH_INSTANCE_TIMEOUT."""
+
+
+def _fault_tolerant() -> bool:
+    """Fault-tolerant sweep mode (default ON). Set CLBENCH_FAULT_TOLERANT=0 to
+    restore the original strict behavior (any instance failure crashes the run)."""
+    return os.environ.get("CLBENCH_FAULT_TOLERANT", "1") != "0"
+
+
 def _is_recoverable_system_response_error(exc: Exception) -> bool:
     """Return whether a system response failure may be scored as zero credit."""
-    return isinstance(exc, RuntimeError) and "LLM call failed:" in str(exc)
+    if isinstance(exc, _InstanceTimeout):
+        return True
+    if not isinstance(exc, RuntimeError):
+        return False
+    msg = str(exc)
+    if "LLM call failed:" in msg:
+        return True
+    # Fault-tolerant: a local model (Qwen3-4B) can emit schema-invalid JSON on
+    # complex schemas (cohort ~100 survival estimates, sales long predictions
+    # arrays). Score zero credit + continue instead of crashing the whole run.
+    if _fault_tolerant() and "did not parse as the required JSON" in msg:
+        return True
+    return False
 
 
 def _system_error_payload(exc: Exception) -> dict[str, Any]:
@@ -145,17 +196,63 @@ def _query_is_terminal(query: Query) -> bool:
     return bool(metadata.get("done"))
 
 
+def _backfill_missing_outcomes(
+    task: ContinualLearningTask, outcomes: list[InstanceOutcome], floor: float = 0.0
+) -> int:
+    """Ensure every expected instance has an outcome. Any expected instance that
+    produced NO outcome (aborted / stuck / skipped) gets a worst-case zero-credit
+    outcome so a failed instance stays in the score DENOMINATOR instead of
+    inflating the mean over the survivors. Returns the number backfilled.
+
+    Note: floor=0.0 is the right worst-case for the reward>=0 skill/report tasks
+    (cohort/sales/bsm/db) where parse failures actually occur; poker (which can be
+    negative) has a trivial schema that does not hit the parse-failure path in
+    practice, so 0.0 is an acceptable/rare over-estimate there."""
+    expected = getattr(task, "num_instances", None)
+    if not isinstance(expected, int) or expected <= 0:
+        return 0
+    seen = {o.instance_index for o in outcomes if o.instance_index is not None}
+    n = 0
+    for idx in range(expected):
+        if idx not in seen:
+            outcomes.append(
+                InstanceOutcome(
+                    instance_id=f"__failed_instance_{idx}__",
+                    instance_index=idx,
+                    reward=floor,
+                    success=False,
+                )
+            )
+            n += 1
+    return n
+
+
 def _finalize_task_result(
     task: ContinualLearningTask,
     system: ContinualLearningSystem,
     trace_recorder: Optional[Any],
     runtime_instance_outcomes: list[InstanceOutcome],
+    *,
+    allow_backfill: bool = True,
 ) -> TaskResult:
     """Evaluate the task and merge any streamed instance outcomes."""
     task_result = task.evaluate()
     final_outcomes = list(task_result.instance_outcomes) or task.get_instance_outcomes()
     _upsert_instance_outcomes(runtime_instance_outcomes, final_outcomes)
     task_result.instance_outcomes = list(runtime_instance_outcomes)
+
+    # Fault-tolerant: backfill worst-case outcomes for any expected instance that
+    # produced none, so the score denominator is whole (no silent inflation).
+    if _fault_tolerant() and allow_backfill:
+        n_backfilled = _backfill_missing_outcomes(task, task_result.instance_outcomes)
+        if n_backfilled:
+            logger.warning(
+                "instances.backfilled_worst_case",
+                extra={
+                    "n_backfilled": n_backfilled,
+                    "total": len(task_result.instance_outcomes),
+                },
+            )
 
     if trace_recorder is not None:
         trace_recorder.sync_instance_outcomes(task_result.instance_outcomes)
@@ -176,16 +273,28 @@ def _make_fallback_action(query: Query) -> BaseModel:
     for field_name, field_info in schema.model_fields.items():
         if not isinstance(field_info.default, PydanticUndefinedType):
             defaults[field_name] = field_info.default
+        elif getattr(field_info, "default_factory", None) is not None:
+            # Field(default_factory=list/dict/...) — honor it so required
+            # containers are never left as None.
+            defaults[field_name] = field_info.default_factory()
         else:
             ann = field_info.annotation
+            origin = get_origin(ann)
             if ann is str:
                 defaults[field_name] = ""
-            elif ann is int:
+            elif ann is int or ann is float:
                 defaults[field_name] = 0
             elif ann is bool:
                 defaults[field_name] = False
-            elif ann is list:
+            elif ann is list or origin in (list, tuple, set, frozenset):
+                # Generic containers (e.g. list[Prediction]) have origin=list but
+                # `annotation is list` is False. A zero-value fallback MUST be an
+                # empty collection, not None — else task.step iterating e.g.
+                # response.predictions hits "TypeError: 'NoneType' not iterable"
+                # OUTSIDE the recovery except-block and crashes the whole run.
                 defaults[field_name] = []
+            elif ann is dict or origin is dict:
+                defaults[field_name] = {}
             else:
                 defaults[field_name] = None
     return schema.model_construct(**defaults)
@@ -236,6 +345,10 @@ def run_task(
         else f"{type(task).__name__} initial query"
     )
     require_query_instance_identity(query, context=query_context)
+    # A baseline measures the frozen policy independently on each instance.
+    # Set this before reset so reused systems cannot carry parameter updates
+    # from one baseline instance into the next. Rollout behavior is unchanged.
+    system.set_parameter_updates_enabled(phase != "baseline")
     if reset_system:
         system.reset()
     system.consume_usage_events()
@@ -258,7 +371,29 @@ def run_task(
     ) -> tuple[Response, float, str, str, list[dict[str, Any]]]:
         response_start_time = datetime.now().isoformat()
         response_start_perf = time.perf_counter()
-        response = system.respond(query)
+        # Per-respond wall-clock timeout (env CLBENCH_INSTANCE_TIMEOUT, 0=off).
+        # signal.alarm fires only on the main thread and at Python bytecode
+        # boundaries (may not interrupt a CUDA kernel mid-generate), but it
+        # reclaims Python-level hangs; qwen_local is parallel_safe=False so this
+        # loop runs on the main thread.
+        _timeout_s = int(os.environ.get("CLBENCH_INSTANCE_TIMEOUT", "0") or 0)
+        _use_alarm = (
+            _timeout_s > 0 and threading.current_thread() is threading.main_thread()
+        )
+        _prev_handler = None
+        if _use_alarm:
+            def _on_alarm(signum, frame):
+                raise _InstanceTimeout(
+                    f"system.respond exceeded CLBENCH_INSTANCE_TIMEOUT={_timeout_s}s"
+                )
+            _prev_handler = signal.signal(signal.SIGALRM, _on_alarm)
+            signal.alarm(_timeout_s)
+        try:
+            response = system.respond(query)
+        finally:
+            if _use_alarm:
+                signal.alarm(0)
+                signal.signal(signal.SIGALRM, _prev_handler)
         response_elapsed_seconds = time.perf_counter() - response_start_perf
         response_end_time = datetime.now().isoformat()
         respond_events = serialize_usage_events(system.consume_usage_events())
@@ -273,6 +408,13 @@ def run_task(
             respond_events,
         )
 
+    # A baseline worker is deliberately sliced to one instance via
+    # ``initial_query`` while ``task.num_instances`` still describes the full
+    # schedule. Backfilling that worker to the full schedule creates N-1 phantom
+    # zero outcomes per real baseline instance. The baseline orchestrator merges
+    # the independent workers, so those sliced workers must never backfill.
+    allow_backfill = not (phase == "baseline" and initial_query is not None)
+
     try:
         latest_outcome: Optional[dict[str, Any]] = None
         initial_outcomes = _upsert_instance_outcomes(
@@ -285,7 +427,11 @@ def run_task(
 
         if _query_is_terminal(query):
             return _finalize_task_result(
-                task, system, trace_recorder, runtime_instance_outcomes
+                task,
+                system,
+                trace_recorder,
+                runtime_instance_outcomes,
+                allow_backfill=allow_backfill,
             )
 
         if show_progress and HAS_TQDM:
@@ -295,6 +441,12 @@ def run_task(
         step = 0
         completed_instances = 0
         prefix = f"[{rollout_label}] " if rollout_label else ""
+        # Fault-tolerance: bail out if the SAME instance keeps failing recoverably
+        # (e.g. a fallback action the task never advances on, like sales' empty
+        # command) instead of looping forever. Missing instances are backfilled
+        # worst-case in _finalize_task_result so the denominator stays whole.
+        consecutive_recovered = 0
+        max_consec = int(os.environ.get("CLBENCH_MAX_CONSEC_FAILURES", "8") or 8)
 
         while not done:
             step += 1
@@ -352,6 +504,7 @@ def run_task(
                     response_end_time,
                     respond_events,
                 ) = _call_system(query)
+                consecutive_recovered = 0  # a successful respond resets the counter
             except ProviderRefusalError as exc:
                 logger.warning(
                     "provider.refusal.fallback",
@@ -382,11 +535,14 @@ def run_task(
                 response_start_time = datetime.now().isoformat()
                 response_end_time = response_start_time
                 respond_events = []
+                consecutive_recovered += 1
             except Exception as exc:
                 if not _is_recoverable_system_response_error(exc):
                     raise
                 step_result = task.handle_system_error(query, exc)
-                if step_result is None:
+                # Fault-tolerant: if the task can't produce a recovery step, fall
+                # back to a zero-credit action (below) instead of crashing the run.
+                if step_result is None and not _fault_tolerant():
                     raise
 
                 error_payload = _system_error_payload(exc)
@@ -413,6 +569,7 @@ def run_task(
                 response_start_time = datetime.now().isoformat()
                 response_end_time = response_start_time
                 respond_events = []
+                consecutive_recovered += 1
 
             if step_result is None:
                 step_result = task.step(response)
@@ -422,6 +579,10 @@ def run_task(
             synced_outcomes = _upsert_instance_outcomes(
                 runtime_instance_outcomes, observed_outcomes
             )
+            feedback_outcome = step_result.instance_outcome
+            if feedback_outcome is None and synced_outcomes:
+                feedback_outcome = synced_outcomes[-1]
+            _attach_env_feedback_metadata(step_result.observation, feedback_outcome)
 
             system.observe(step_result.observation, step_result.next_query)
             observe_events = serialize_usage_events(system.consume_usage_events())
@@ -509,6 +670,23 @@ def run_task(
             if done:
                 break
 
+            if _fault_tolerant() and consecutive_recovered >= max_consec:
+                logger.warning(
+                    "instance.stuck.abort",
+                    extra={
+                        "instance_index": query.instance_index,
+                        "consecutive_recovered": consecutive_recovered,
+                        "step": step,
+                    },
+                )
+                print(
+                    f"  WARNING: {consecutive_recovered} consecutive recoverable "
+                    f"failures at instance #{query.instance_index}; aborting run "
+                    f"and backfilling worst-case outcomes.",
+                    flush=True,
+                )
+                break
+
             next_query = step_result.next_query
             if next_query is None:
                 raise RuntimeError("Task returned done=False but next_query=None.")
@@ -524,7 +702,11 @@ def run_task(
             query = next_query
 
         return _finalize_task_result(
-            task, system, trace_recorder, runtime_instance_outcomes
+            task,
+            system,
+            trace_recorder,
+            runtime_instance_outcomes,
+            allow_backfill=allow_backfill,
         )
     finally:
         if pbar is not None:
