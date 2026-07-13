@@ -3,6 +3,7 @@ import unittest
 from src.cli import convert_type
 from src.registry import get_class_params
 from src.systems.ace import ACESystem
+from src.systems.qwen_local.system import QwenLocalSystem
 from src.tasks.exploitable_poker.task import Poker
 
 
@@ -30,6 +31,16 @@ class CLITypesTests(unittest.TestCase):
             convert_type("quick_test", params["schedule"]["type"]),
             "quick_test",
         )
+
+    def test_qwen_candidate_proposer_is_opt_in_and_cli_typed(self):
+        params = get_class_params(QwenLocalSystem)
+        proposer = params["grpo_candidate_proposer"]
+        self.assertIsNone(proposer["default"])
+        self.assertEqual(
+            convert_type("unit_interval_jitter", proposer["type"]),
+            "unit_interval_jitter",
+        )
+        self.assertEqual(QwenLocalSystem().grpo_candidate_proposer, "policy_sample")
 
 
 if __name__ == "__main__":

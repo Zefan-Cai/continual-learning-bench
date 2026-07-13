@@ -55,8 +55,46 @@ with tempfile.TemporaryDirectory() as tmp:
     assert compact["system_update_metrics"]["grpo_updates"] == 3
     assert compact["system_update_metrics"]["grpo_optimizer_steps"] == 3
     assert compact["system_update_metrics"]["grpo_run_seed"] == 20260712
-    assert compact["system_update_metrics"]["grpo_objective"] == "group_normalized_policy_gradient"
+    assert (
+        compact["system_update_metrics"]["grpo_objective"]
+        == "group_normalized_policy_gradient"
+    )
     assert compact["system_update_metrics"]["grpo_instance_log"][0]["loss"] == 0.125
+
+    candidate_live = Path(tmp) / "candidate_run.json"
+    candidate = TraceRecorder(
+        system_name="qwen_local",
+        task_name="dummy",
+        system_params={
+            "reward_update_rule": "candidate_distill_instance",
+            "grpo_candidate_proposer": "unit_interval_jitter",
+        },
+        task_params={},
+        live_trace_path=candidate_live,
+    )
+    candidate.record_system_artifacts(
+        {
+            **artifacts,
+            "reward_update_rule": "candidate_distill_instance",
+            "grpo_objective": "group_normalized_candidate_distillation",
+            "grpo_candidate_proposer": "unit_interval_jitter",
+            "grpo_instance_log": [
+                {
+                    "group_size": 4,
+                    "objective": "group_normalized_candidate_distillation",
+                    "candidate_proposer": "unit_interval_jitter",
+                }
+            ],
+        }
+    )
+    candidate.finalize(result)
+    candidate_compact = json.load(open(candidate_live))
+    assert candidate_compact["system_update_metrics"]["grpo_objective"] == (
+        "group_normalized_candidate_distillation"
+    )
+    assert candidate_compact["system_update_metrics"]["grpo_candidate_proposer"] == (
+        "unit_interval_jitter"
+    )
 
     old_live = Path(tmp) / "old_run.json"
     old = TraceRecorder(

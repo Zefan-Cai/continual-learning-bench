@@ -492,17 +492,20 @@ class TraceRecorder:
         # sweep uploads live/<cfg>/ and must retain enough structured evidence to
         # prove whether parameter updates actually occurred. The opt-in check
         # preserves byte-identical manifests for every existing/default rule.
-        if (
-            isinstance(self.system_artifacts, dict)
-            and self.system_artifacts.get("reward_update_rule")
-            in {"grpo_instance", "group_pg_instance"}
-        ):
+        if isinstance(self.system_artifacts, dict) and self.system_artifacts.get(
+            "reward_update_rule"
+        ) in {
+            "grpo_instance",
+            "group_pg_instance",
+            "candidate_distill_instance",
+        }:
             update_keys = (
                 "reward_update_rule",
                 "parameter_updates_enabled",
                 "freeze_parameter_updates",
                 "grpo_frozen_stream",
                 "grpo_objective",
+                "grpo_candidate_proposer",
                 "grpo_run_seed",
                 "grpo_updates",
                 "grpo_optimizer_steps",
@@ -513,6 +516,8 @@ class TraceRecorder:
                 "last_grpo_reward_mean",
                 "last_grpo_reward_std",
                 "last_grpo_committed_reward",
+                "grpo_trainable_param_sha256_initial",
+                "grpo_trainable_param_sha256_current",
                 "reward_pg_updates",
                 "bon_updates",
                 "distill_updates",

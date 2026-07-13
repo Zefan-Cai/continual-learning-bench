@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
+import random
 import re
 import signal
 import threading
@@ -46,7 +48,17 @@ _LORA_TARGET_MODULE_PRESETS = {
     "qv_ffn": ("q_proj", "v_proj", "gate_proj", "up_proj", "down_proj"),
 }
 _INSTANCE_GROUP_PG_RULES = {"grpo_instance", "group_pg_instance"}
+_INSTANCE_CANDIDATE_DISTILL_RULE = "candidate_distill_instance"
+_INSTANCE_GROUP_UPDATE_RULES = {
+    *_INSTANCE_GROUP_PG_RULES,
+    _INSTANCE_CANDIDATE_DISTILL_RULE,
+}
 _INSTANCE_GROUP_PG_OBJECTIVE = "group_normalized_policy_gradient"
+_INSTANCE_STRUCTURED_PROPOSAL_OBJECTIVE = "group_normalized_candidate_distillation"
+_GROUP_PG_CANDIDATE_PROPOSERS = {"policy_sample", "unit_interval_jitter"}
+_GROUP_PG_PROPOSAL_JITTER_SCALE = 0.35
+_GROUP_PG_LOGIT_CHUNK_TOKENS = 128
+_GROUP_PG_LOGIT_STRATEGY = "decoder_hidden_hook+chunked_target_ce"
 
 
 @register_system("qwen_local")
@@ -113,6 +125,7 @@ class QwenLocalSystem(ContinualLearningSystem):
         grpo_adv_clip: float = 2.0,
         grpo_std_floor: float = 1e-4,
         grpo_run_seed: int = 0,
+        grpo_candidate_proposer: str | None = None,
         freeze_parameter_updates: bool = False,
         grpo_frozen_stream: bool = False,
     ):
@@ -163,6 +176,7 @@ class QwenLocalSystem(ContinualLearningSystem):
             "grpo_norm",
             "grpo_instance",
             "group_pg_instance",
+            "candidate_distill_instance",
         }
         if reward_update_rule not in supported_reward_update_rules:
             raise ValueError(
@@ -186,13 +200,12 @@ class QwenLocalSystem(ContinualLearningSystem):
         bon_critic = bon_critic.lower().strip()
         if bon_critic not in {"llm", "env"}:
             raise ValueError("bon_critic must be 'llm' or 'env'")
-        if reward_update_rule in _INSTANCE_GROUP_PG_RULES and (
+        if reward_update_rule in _INSTANCE_GROUP_UPDATE_RULES and (
             best_of_n < 2 or bon_critic != "env"
         ):
             raise ValueError(
-                "reward_update_rule='group_pg_instance' (or legacy alias "
-                "'grpo_instance') requires best_of_n >= 2 and bon_critic='env' "
-                "(the instance-level group policy-gradient objective scores the "
+                "instance group reward updates require best_of_n >= 2 and "
+                "bon_critic='env' (the post-commit objective scores the "
                 "stashed env-BoN candidate group post-hoc at completion)"
             )
         if grpo_adv_clip <= 0:
@@ -203,15 +216,54 @@ class QwenLocalSystem(ContinualLearningSystem):
             raise ValueError("grpo_run_seed must be an integer")
         if grpo_run_seed < 0:
             raise ValueError("grpo_run_seed must be non-negative")
+        if grpo_candidate_proposer is None:
+            grpo_candidate_proposer = "policy_sample"
+        elif not isinstance(grpo_candidate_proposer, str):
+            raise ValueError("grpo_candidate_proposer must be a string or null")
+        else:
+            grpo_candidate_proposer = grpo_candidate_proposer.lower().strip()
+        if grpo_candidate_proposer not in _GROUP_PG_CANDIDATE_PROPOSERS:
+            raise ValueError(
+                f"grpo_candidate_proposer={grpo_candidate_proposer!r} must be one of "
+                f"{sorted(_GROUP_PG_CANDIDATE_PROPOSERS)}"
+            )
+        if reward_update_rule in _INSTANCE_GROUP_PG_RULES and (
+            grpo_candidate_proposer != "policy_sample"
+        ):
+            raise ValueError(
+                "reward_update_rule='group_pg_instance' (or legacy alias "
+                "'grpo_instance') requires grpo_candidate_proposer='policy_sample'"
+            )
+        if reward_update_rule == _INSTANCE_CANDIDATE_DISTILL_RULE and (
+            grpo_candidate_proposer != "unit_interval_jitter"
+        ):
+            raise ValueError(
+                "reward_update_rule='candidate_distill_instance' requires "
+                "grpo_candidate_proposer='unit_interval_jitter'"
+            )
+        if (
+            grpo_candidate_proposer != "policy_sample"
+            and reward_update_rule != _INSTANCE_CANDIDATE_DISTILL_RULE
+        ):
+            raise ValueError(
+                "grpo_candidate_proposer='unit_interval_jitter' is only supported "
+                "by reward_update_rule='candidate_distill_instance'"
+            )
         if (
             freeze_parameter_updates or grpo_frozen_stream
-        ) and reward_update_rule not in _INSTANCE_GROUP_PG_RULES:
+        ) and reward_update_rule not in _INSTANCE_GROUP_UPDATE_RULES:
             raise ValueError(
                 "freeze_parameter_updates is only supported by "
                 "reward_update_rule='group_pg_instance' (or legacy alias "
                 "'grpo_instance')"
             )
-        supported_reward_judge_providers = {"env", "heuristic", "openai", "openrouter", "self"}
+        supported_reward_judge_providers = {
+            "env",
+            "heuristic",
+            "openai",
+            "openrouter",
+            "self",
+        }
         if reward_judge_provider not in supported_reward_judge_providers:
             raise ValueError(
                 f"reward_judge_provider={reward_judge_provider!r} must be one of "
@@ -286,6 +338,7 @@ class QwenLocalSystem(ContinualLearningSystem):
         self.grpo_adv_clip = grpo_adv_clip
         self.grpo_std_floor = grpo_std_floor
         self.grpo_run_seed = grpo_run_seed
+        self.grpo_candidate_proposer = grpo_candidate_proposer
         # ``grpo_frozen_stream`` is kept as a compatibility alias for the first
         # local D2 draft.  New configs should use the mechanism-neutral name.
         self.freeze_parameter_updates = bool(
@@ -332,6 +385,8 @@ class QwenLocalSystem(ContinualLearningSystem):
         self.last_grpo_reward_mean: float | None = None
         self.last_grpo_reward_std: float | None = None
         self.last_grpo_committed_reward: float | None = None
+        self.grpo_trainable_param_sha256_initial: str | None = None
+        self.grpo_trainable_param_sha256_current: str | None = None
         self._grpo_instance_log: list[dict[str, Any]] = []
         self._reward_history: list[float] = []
         self._last_action_training_ids: list[int] | None = None
@@ -357,8 +412,13 @@ class QwenLocalSystem(ContinualLearningSystem):
         return self._name
 
     def _uses_instance_group_pg(self) -> bool:
-        """Whether the honest group-PG rule or its legacy name is selected."""
-        return self.reward_update_rule in _INSTANCE_GROUP_PG_RULES
+        """Whether an opt-in post-commit instance-group update is selected."""
+        return self.reward_update_rule in _INSTANCE_GROUP_UPDATE_RULES
+
+    def _grpo_objective_name(self) -> str:
+        if self.grpo_candidate_proposer == "policy_sample":
+            return _INSTANCE_GROUP_PG_OBJECTIVE
+        return _INSTANCE_STRUCTURED_PROPOSAL_OBJECTIVE
 
     def set_parameter_updates_enabled(self, enabled: bool) -> None:
         """Freeze every update path only for the opt-in instance group-PG rule.
@@ -401,6 +461,8 @@ class QwenLocalSystem(ContinualLearningSystem):
         self.last_grpo_reward_mean = None
         self.last_grpo_reward_std = None
         self.last_grpo_committed_reward = None
+        self.grpo_trainable_param_sha256_initial = None
+        self.grpo_trainable_param_sha256_current = None
         self._grpo_instance_log = []
         self._reward_history = []
         self.distill_updates = 0
@@ -458,8 +520,8 @@ class QwenLocalSystem(ContinualLearningSystem):
                 parsed_action, repaired = self._parse_action(
                     cleaned_text, query.response_schema
                 )
-                parsed_action, action_normalized = (
-                    self._normalize_zero_cost_poker_call(parsed_action, query)
+                parsed_action, action_normalized = self._normalize_zero_cost_poker_call(
+                    parsed_action, query
                 )
                 parse_repair_used = parse_repair_used or repaired
                 parse_repair_used = parse_repair_used or action_normalized
@@ -626,7 +688,8 @@ class QwenLocalSystem(ContinualLearningSystem):
             "parameter_updates_enabled": self.parameter_updates_enabled,
             "freeze_parameter_updates": self.freeze_parameter_updates,
             "grpo_frozen_stream": self.grpo_frozen_stream,
-            "grpo_objective": _INSTANCE_GROUP_PG_OBJECTIVE,
+            "grpo_objective": self._grpo_objective_name(),
+            "grpo_candidate_proposer": self.grpo_candidate_proposer,
             "grpo_run_seed": self.grpo_run_seed,
             "grpo_updates": self.grpo_updates,
             "grpo_optimizer_steps": self.grpo_optimizer_steps,
@@ -637,6 +700,12 @@ class QwenLocalSystem(ContinualLearningSystem):
             "last_grpo_reward_mean": self.last_grpo_reward_mean,
             "last_grpo_reward_std": self.last_grpo_reward_std,
             "last_grpo_committed_reward": self.last_grpo_committed_reward,
+            "grpo_trainable_param_sha256_initial": (
+                self.grpo_trainable_param_sha256_initial
+            ),
+            "grpo_trainable_param_sha256_current": (
+                self.grpo_trainable_param_sha256_current
+            ),
         }
 
     def observe(
@@ -674,12 +743,14 @@ class QwenLocalSystem(ContinualLearningSystem):
                     {
                         "group_size": 0,
                         "skipped": "no_pending",
-                        "objective": _INSTANCE_GROUP_PG_OBJECTIVE,
+                        "objective": self._grpo_objective_name(),
                     }
                 )
             else:
                 self._materialize_pending_env_bon_candidates()
-        if self.parameter_updates_enabled and (content or has_env_reward or judge_dense):
+        if self.parameter_updates_enabled and (
+            content or has_env_reward or judge_dense
+        ):
             self._adapt_from_feedback(observation)
         # TextGrad-style critique->SFT distillation: at instance completion, ask a
         # critic for an improved answer and SFT the adapter toward it. Fires only at
@@ -768,6 +839,7 @@ class QwenLocalSystem(ContinualLearningSystem):
             artifacts.update(self._grpo_usage_metadata())
             artifacts["grpo_adv_clip"] = self.grpo_adv_clip
             artifacts["grpo_std_floor"] = self.grpo_std_floor
+            artifacts["grpo_candidate_proposer"] = self.grpo_candidate_proposer
             artifacts["grpo_instance_log"] = list(self._grpo_instance_log)
         return artifacts
 
@@ -870,7 +942,9 @@ class QwenLocalSystem(ContinualLearningSystem):
             score = sum(chunk_text.count(term) for term in query_terms)
             scored.append((score, idx, chunk))
         selected = sorted(scored, key=lambda item: (item[0], item[1]), reverse=True)
-        top = [chunk for score, _, chunk in selected[: self.ttt_max_chunks] if score > 0]
+        top = [
+            chunk for score, _, chunk in selected[: self.ttt_max_chunks] if score > 0
+        ]
         return top or chunks[-self.ttt_max_chunks :]
 
     def _render_ttt_history_window(self, history: list[dict[str, str]]) -> str:
@@ -1153,12 +1227,82 @@ class QwenLocalSystem(ContinualLearningSystem):
                 ignored = max(0, min(len(trimmed), int(prompt_tokens) - offset))
                 if ignored >= len(trimmed):
                     continue
-            prepared.append(
-                (trimmed, ignored, float(batch.get("signed_weight", 1.0)))
-            )
+            prepared.append((trimmed, ignored, float(batch.get("signed_weight", 1.0))))
         if not prepared:
             model.eval()
             raise RuntimeError("No valid candidate batches for group objective")
+
+        # Emit the bounded-memory execution plan before the first model forward.
+        # This deliberately contains only token counts, never prompt/candidate text,
+        # so an OOM or other forward failure still leaves useful audit evidence.
+        candidate_token_stats = []
+        for trimmed, ignored, _signed_weight in prepared:
+            prompt_tokens_retained = max(0, int(ignored or 0))
+            target_start = max(1, prompt_tokens_retained)
+            candidate_token_stats.append(
+                {
+                    "trimmed_tokens": len(trimmed),
+                    "prompt_tokens_retained": prompt_tokens_retained,
+                    "target_tokens": len(trimmed) - target_start,
+                }
+            )
+        print(
+            "GROUP_PG_TRAINER "
+            + json.dumps(
+                {
+                    "candidate_token_stats": candidate_token_stats,
+                    "group_size": len(prepared),
+                    "logit_chunk_tokens": _GROUP_PG_LOGIT_CHUNK_TOKENS,
+                    "logits_to_keep": 1,
+                    "strategy": _GROUP_PG_LOGIT_STRATEGY,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+
+        # Resolve the decoder and frozen output projection through the PEFT wrapper.
+        # Qwen's native `logits_to_keep` avoids the full [sequence, vocab] tensor,
+        # while the decoder hook gives us the complete hidden sequence needed for
+        # exact prompt-masked causal CE.
+        get_base_model = getattr(model, "get_base_model", None)
+        base_lm = get_base_model() if callable(get_base_model) else model
+        decoder = getattr(base_lm, "model", None)
+        if decoder is None or not hasattr(decoder, "register_forward_hook"):
+            raise RuntimeError(
+                "Group objective requires a causal LM with a hookable decoder"
+            )
+        get_output_embeddings = getattr(model, "get_output_embeddings", None)
+        if callable(get_output_embeddings):
+            output_embeddings = get_output_embeddings()
+        else:
+            base_get_output_embeddings = getattr(base_lm, "get_output_embeddings", None)
+            output_embeddings = (
+                base_get_output_embeddings()
+                if callable(base_get_output_embeddings)
+                else None
+            )
+        if output_embeddings is None:
+            raise RuntimeError(
+                "Group objective requires a causal LM output embedding projection"
+            )
+        if any(param.requires_grad for param in output_embeddings.parameters()):
+            raise RuntimeError(
+                "Chunked group objective requires frozen output embeddings"
+            )
+
+        # Non-reentrant checkpointing supports LoRA parameters even though the base
+        # embeddings are frozen, and only affects this explicitly selected trainer.
+        gradient_checkpointing_enable = getattr(
+            model, "gradient_checkpointing_enable", None
+        )
+        if callable(gradient_checkpointing_enable):
+            try:
+                gradient_checkpointing_enable(
+                    gradient_checkpointing_kwargs={"use_reentrant": False}
+                )
+            except TypeError:
+                gradient_checkpointing_enable()
 
         optimizer = torch.optim.AdamW(params, lr=lr)
         optimizer.zero_grad(set_to_none=True)
@@ -1168,13 +1312,94 @@ class QwenLocalSystem(ContinualLearningSystem):
         try:
             for trimmed, ignored, signed_weight in prepared:
                 input_ids = torch.tensor([trimmed], device=device)
-                labels = input_ids.clone()
-                if ignored:
-                    labels[:, :ignored] = -100
-                outputs = model(input_ids=input_ids, labels=labels)
-                signed_loss = outputs.loss * signed_weight
-                (signed_loss / group_size).backward()
-                objective_value += float(signed_loss.detach().cpu()) / group_size
+                captured_hidden: list[Any] = []
+
+                def capture_decoder_hidden(
+                    _module: Any, _inputs: Any, output: Any
+                ) -> None:
+                    hidden = getattr(output, "last_hidden_state", None)
+                    if hidden is None and isinstance(output, (tuple, list)):
+                        hidden = output[0]
+                    if hidden is None:
+                        raise RuntimeError(
+                            "Decoder hook did not receive last_hidden_state"
+                        )
+                    captured_hidden.append(hidden)
+
+                hook = decoder.register_forward_hook(capture_decoder_hidden)
+                try:
+                    # PEFT remains in the forward path (LoRA/prefix semantics are
+                    # preserved), but Qwen only projects the final hidden token here.
+                    forward_outputs = model(
+                        input_ids=input_ids,
+                        labels=None,
+                        use_cache=False,
+                        logits_to_keep=1,
+                        return_dict=True,
+                    )
+                finally:
+                    hook.remove()
+                if len(captured_hidden) != 1:
+                    raise RuntimeError(
+                        "Expected exactly one decoder hidden-state capture, got "
+                        f"{len(captured_hidden)}"
+                    )
+                hidden_states = captured_hidden.pop()
+                del forward_outputs
+
+                prompt_tokens_retained = max(0, int(ignored or 0))
+                target_start = max(1, prompt_tokens_retained)
+                target_count = len(trimmed) - target_start
+                if target_count <= 0:
+                    raise RuntimeError(
+                        "Prepared group candidate has no causal target tokens"
+                    )
+
+                # Build d(objective)/d(decoder_hidden) without ever retaining more
+                # than one small [chunk, vocab] projection. The output projection is
+                # frozen, so this is exactly equivalent to a full-logits CE backward.
+                hidden_gradient = torch.zeros_like(hidden_states)
+                candidate_loss_sum = 0.0
+                for chunk_start in range(0, target_count, _GROUP_PG_LOGIT_CHUNK_TOKENS):
+                    chunk_end = min(
+                        target_count,
+                        chunk_start + _GROUP_PG_LOGIT_CHUNK_TOKENS,
+                    )
+                    prediction_start = target_start - 1 + chunk_start
+                    prediction_end = target_start - 1 + chunk_end
+                    prediction_hidden = hidden_states[
+                        :, prediction_start:prediction_end, :
+                    ]
+                    targets = input_ids[
+                        :, target_start + chunk_start : target_start + chunk_end
+                    ]
+                    chunk_logits = output_embeddings(prediction_hidden)
+                    chunk_loss_sum = torch.nn.functional.cross_entropy(
+                        chunk_logits.float().reshape(-1, chunk_logits.shape[-1]),
+                        targets.reshape(-1),
+                        reduction="sum",
+                    )
+                    (chunk_hidden_gradient,) = torch.autograd.grad(
+                        chunk_loss_sum, prediction_hidden
+                    )
+                    hidden_gradient[:, prediction_start:prediction_end, :].add_(
+                        chunk_hidden_gradient,
+                        alpha=signed_weight / (group_size * target_count),
+                    )
+                    candidate_loss_sum += float(chunk_loss_sum.detach().cpu())
+                    del (
+                        chunk_hidden_gradient,
+                        chunk_logits,
+                        chunk_loss_sum,
+                        prediction_hidden,
+                        targets,
+                    )
+
+                hidden_states.backward(hidden_gradient)
+                objective_value += (
+                    signed_weight * candidate_loss_sum / target_count / group_size
+                )
+                del hidden_gradient, hidden_states, input_ids
             torch.nn.utils.clip_grad_norm_(params, 1.0)
             optimizer.step()
             self.grpo_optimizer_steps += 1
@@ -1263,7 +1488,9 @@ class QwenLocalSystem(ContinualLearningSystem):
             )
 
         baseline_window = self._reward_history[-self.reward_advantage_window :]
-        baseline = sum(baseline_window) / len(baseline_window) if baseline_window else 0.0
+        baseline = (
+            sum(baseline_window) / len(baseline_window) if baseline_window else 0.0
+        )
         advantage = reward - baseline
         self.last_reward_advantage = advantage
         self.last_reward_clipped_advantage = None
@@ -1286,7 +1513,7 @@ class QwenLocalSystem(ContinualLearningSystem):
                 var = sum((r - mean_w) ** 2 for r in baseline_window) / len(
                     baseline_window
                 )
-                std = var ** 0.5
+                std = var**0.5
             else:
                 std = 0.0
             norm_adv = advantage / (std + 1e-6) if std > 1e-6 else advantage
@@ -1469,7 +1696,11 @@ class QwenLocalSystem(ContinualLearningSystem):
         if not answer_text.strip() or not query_text.strip():
             return
         improved = self._critic_improved_answer(query_text, answer_text, observation)
-        if not improved or not improved.strip() or improved.strip() == answer_text.strip():
+        if (
+            not improved
+            or not improved.strip()
+            or improved.strip() == answer_text.strip()
+        ):
             return
 
         prompt_text = self._render_generation_prompt(
@@ -1549,7 +1780,9 @@ class QwenLocalSystem(ContinualLearningSystem):
         )
         if self.distill_provider == "self":
             try:
-                raw, _ = self._generate_text(prompt, max_new_tokens=self.action_max_new_tokens)
+                raw, _ = self._generate_text(
+                    prompt, max_new_tokens=self.action_max_new_tokens
+                )
             except Exception:
                 return None
             return self._extract_improved_answer(self._strip_think(raw))
@@ -1656,7 +1889,11 @@ class QwenLocalSystem(ContinualLearningSystem):
         if pos is None:
             return
         batches.append(pos)
-        if self.distill_contrastive and self.reward_negative_weight > 0 and worst != best:
+        if (
+            self.distill_contrastive
+            and self.reward_negative_weight > 0
+            and worst != best
+        ):
             neg = self._build_distill_batch(
                 prompt_text, worst, -self.reward_negative_weight
             )
@@ -1687,6 +1924,7 @@ class QwenLocalSystem(ContinualLearningSystem):
         instance_index: int | None = None,
         instance_id: str | None = None,
         interaction_step: int | None = None,
+        sampling_seed: int | None = None,
     ) -> None:
         if self._uses_instance_group_pg() and not force_sample:
             # Tool-using tasks may take dozens of nonterminal command steps. The
@@ -1714,6 +1952,8 @@ class QwenLocalSystem(ContinualLearningSystem):
                 "seed_instance_id": instance_id,
                 "seed_interaction_step": seed_step,
                 "sampling_seed": sampling_seed,
+                "candidate_proposer": self.grpo_candidate_proposer,
+                "objective": self._grpo_objective_name(),
                 "sampling_prompt_sha256": hashlib.sha256(
                     sampling_prompt.encode("utf-8")
                 ).hexdigest(),
@@ -1727,9 +1967,27 @@ class QwenLocalSystem(ContinualLearningSystem):
                     ),
                     "max_new_tokens": max_new_tokens,
                     "sampling_seed": sampling_seed,
+                    "candidate_proposer": self.grpo_candidate_proposer,
+                    "objective": self._grpo_objective_name(),
                     "update_signature": self._grpo_update_signature(),
                 },
             }
+            return
+        if (
+            self._uses_instance_group_pg()
+            and self.grpo_candidate_proposer == "unit_interval_jitter"
+        ):
+            self._stash_unit_interval_jitter_candidates(
+                prompt_for_attempt,
+                generation_prefix,
+                primary_answer,
+                query_text,
+                schema,
+                primary_continuation=primary_continuation,
+                sampling_seed=(
+                    self.grpo_run_seed if sampling_seed is None else sampling_seed
+                ),
+            )
             return
         candidate_records = [
             {
@@ -1743,33 +2001,54 @@ class QwenLocalSystem(ContinualLearningSystem):
         ]
         generation_failures = 0
         parse_failures = 0
+        initial_sample_attempts = 0
+        rescue_sample_attempts = 0
+
+        def sample_candidate() -> None:
+            nonlocal generation_failures, parse_failures
+            try:
+                continuation, _ = self._generate_text(
+                    prompt_for_attempt + generation_prefix,
+                    max_new_tokens=max_new_tokens,
+                )
+            except Exception:
+                generation_failures += 1
+                return
+            raw = self._merge_generation_prefix(generation_prefix, continuation)
+            cleaned = self._strip_think(raw).strip()
+            try:
+                parsed, _ = self._parse_action(cleaned, schema)
+            except Exception:
+                parse_failures += 1
+                return
+            candidate_records.append(
+                {
+                    "answer": parsed.model_dump_json(),
+                    "continuation": continuation,
+                }
+            )
+
+        def valid_unique_count() -> int:
+            return len({record["answer"] for record in candidate_records})
+
         saved_temp = self.temperature
         try:
             self.temperature = self.bon_temperature if self.bon_temperature > 0 else 0.8
             for _ in range(self.best_of_n - 1):
-                try:
-                    continuation, _ = self._generate_text(
-                        prompt_for_attempt + generation_prefix,
-                        max_new_tokens=max_new_tokens,
-                    )
-                except Exception:
-                    generation_failures += 1
-                    continue
-                raw = self._merge_generation_prefix(
-                    generation_prefix, continuation
-                )
-                cleaned = self._strip_think(raw).strip()
-                try:
-                    parsed, _ = self._parse_action(cleaned, schema)
-                    candidate_records.append(
-                        {
-                            "answer": parsed.model_dump_json(),
-                            "continuation": continuation,
-                        }
-                    )
-                except Exception:
-                    parse_failures += 1
-                    continue
+                initial_sample_attempts += 1
+                sample_candidate()
+
+            # A degenerate group cannot produce a normalized group-PG update. Keep
+            # the original K-1 draws intact, then (only for instance group-PG) use
+            # at most one more bounded K-1 segment of the same deterministic RNG
+            # stream. Stop as soon as a second unique parsed action exists. The
+            # primary action plus that rescue action still fits within best_of_n.
+            if self._uses_instance_group_pg() and valid_unique_count() < 2:
+                for _ in range(self.best_of_n - 1):
+                    rescue_sample_attempts += 1
+                    sample_candidate()
+                    if valid_unique_count() >= 2:
+                        break
         finally:
             self.temperature = saved_temp
         unique_records: list[dict[str, str]] = []
@@ -1794,9 +2073,15 @@ class QwenLocalSystem(ContinualLearningSystem):
                     "sampling_prompt_sha256": hashlib.sha256(
                         (prompt_for_attempt + generation_prefix).encode("utf-8")
                     ).hexdigest(),
+                    "candidate_proposer": self.grpo_candidate_proposer,
+                    "objective": self._grpo_objective_name(),
                     "candidate_sampling": {
                         "requested_group_size": self.best_of_n,
-                        "sample_attempts": self.best_of_n - 1,
+                        "initial_sample_attempts": initial_sample_attempts,
+                        "rescue_sample_attempts": rescue_sample_attempts,
+                        "sample_attempts": (
+                            initial_sample_attempts + rescue_sample_attempts
+                        ),
                         "generation_failures": generation_failures,
                         "parse_failures": parse_failures,
                         "duplicates": len(candidate_records) - len(unique_records),
@@ -1804,6 +2089,253 @@ class QwenLocalSystem(ContinualLearningSystem):
                     },
                 }
             )
+
+    def _stash_unit_interval_jitter_candidates(
+        self,
+        prompt_for_attempt: str,
+        generation_prefix: str,
+        primary_answer: str,
+        query_text: str,
+        schema: type[BaseModel],
+        *,
+        primary_continuation: str | None,
+        sampling_seed: int,
+    ) -> None:
+        """Build a bounded, pre-reward local proposal group for flat survival data.
+
+        These candidates are deliberately not described as policy samples.  They
+        form an opt-in candidate-distillation objective around the committed
+        report, with deterministic candidate-local RNG streams and no model calls.
+        """
+        primary_model = schema.model_validate_json(primary_answer)
+        primary_data = primary_model.model_dump(mode="json")
+        self._validate_unit_interval_triplet_payload(primary_data)
+
+        primary_identity = self._canonical_candidate_identity(primary_answer, schema)
+        candidate_records: list[dict[str, Any]] = [
+            {
+                "answer": primary_answer,
+                "continuation": (
+                    self._continuation_after_generation_prefix(
+                        primary_answer, generation_prefix
+                    )
+                    if primary_continuation is None
+                    else primary_continuation
+                ),
+                "source": "primary_policy",
+            }
+        ]
+        seen_identities = {primary_identity}
+        initial_sample_attempts = 0
+        rescue_sample_attempts = 0
+        parse_failures = 0
+        duplicates = 0
+        proposal_seed_digests: list[str] = []
+
+        def propose(attempt_index: int) -> None:
+            nonlocal parse_failures, duplicates
+            proposal_seed = self._derive_grpo_proposal_seed(
+                sampling_seed=sampling_seed,
+                attempt_index=attempt_index,
+            )
+            proposal_seed_digests.append(
+                hashlib.sha256(str(proposal_seed).encode("ascii")).hexdigest()
+            )
+            try:
+                answer = self._unit_interval_jitter_candidate(
+                    primary_data,
+                    schema,
+                    proposal_seed=proposal_seed,
+                )
+                identity = self._canonical_candidate_identity(answer, schema)
+            except Exception:
+                parse_failures += 1
+                return
+            if identity in seen_identities:
+                duplicates += 1
+                return
+            continuation = self._continuation_after_generation_prefix(
+                answer, generation_prefix
+            )
+            roundtrip = generation_prefix + continuation
+            if self._canonical_candidate_identity(roundtrip, schema) != identity:
+                raise RuntimeError(
+                    "Structured candidate prefix/continuation round-trip mismatch"
+                )
+            seen_identities.add(identity)
+            candidate_records.append(
+                {
+                    "answer": answer,
+                    "continuation": continuation,
+                    "source": "unit_interval_jitter",
+                    "attempt_index": attempt_index,
+                    "proposal_seed": proposal_seed,
+                }
+            )
+
+        attempt_index = 0
+        for _ in range(self.best_of_n - 1):
+            initial_sample_attempts += 1
+            propose(attempt_index)
+            attempt_index += 1
+        if len(candidate_records) < self.best_of_n:
+            for _ in range(self.best_of_n - 1):
+                rescue_sample_attempts += 1
+                propose(attempt_index)
+                attempt_index += 1
+                if len(candidate_records) >= self.best_of_n:
+                    break
+
+        sample_attempts = initial_sample_attempts + rescue_sample_attempts
+        if len(proposal_seed_digests) != sample_attempts or len(
+            set(proposal_seed_digests)
+        ) != len(proposal_seed_digests):
+            raise RuntimeError("Structured proposal seeds must be unique per attempt")
+        self._pending_env_bon = {
+            "query_text": query_text,
+            "candidates": [record["answer"] for record in candidate_records],
+            "schema": schema,
+            "prompt_for_attempt": prompt_for_attempt,
+            "generation_prefix": generation_prefix,
+            "candidate_records": candidate_records,
+            "sampling_prompt_sha256": hashlib.sha256(
+                (prompt_for_attempt + generation_prefix).encode("utf-8")
+            ).hexdigest(),
+            "candidate_proposer": self.grpo_candidate_proposer,
+            "objective": self._grpo_objective_name(),
+            "candidate_sampling": {
+                "candidate_proposer": self.grpo_candidate_proposer,
+                "proposal_seed_scheme": "blake2b(base_sampling_seed,attempt_index)",
+                "proposal_jitter_scale": _GROUP_PG_PROPOSAL_JITTER_SCALE,
+                "proposal_seed_digests": proposal_seed_digests,
+                "model_generation_attempts": 0,
+                "structured_proposal_attempts": sample_attempts,
+                "requested_group_size": self.best_of_n,
+                "target_valid_unique": self.best_of_n,
+                "max_sample_attempts": 2 * (self.best_of_n - 1),
+                "initial_sample_attempts": initial_sample_attempts,
+                "rescue_sample_attempts": rescue_sample_attempts,
+                "sample_attempts": sample_attempts,
+                "generation_failures": 0,
+                "parse_failures": parse_failures,
+                "duplicates": duplicates,
+                "valid_unique": len(candidate_records),
+                "proposal_mode_counts": {
+                    "primary_policy": 1,
+                    "unit_interval_jitter": len(candidate_records) - 1,
+                },
+            },
+        }
+
+    @staticmethod
+    def _derive_grpo_proposal_seed(*, sampling_seed: int, attempt_index: int) -> int:
+        payload = json.dumps(
+            {
+                "sampling_seed": int(sampling_seed),
+                "attempt_index": int(attempt_index),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        digest = hashlib.blake2b(payload, digest_size=8, person=b"clb-gpprop").digest()
+        return int.from_bytes(digest, "big") & ((1 << 63) - 1)
+
+    @staticmethod
+    def _validate_unit_interval_triplet_payload(data: Any) -> None:
+        if not isinstance(data, dict) or not data:
+            raise ValueError(
+                "unit_interval_jitter requires a non-empty flat JSON object"
+            )
+        grouped: dict[str, set[str]] = {}
+        for key, value in data.items():
+            if not isinstance(key, str):
+                raise ValueError("unit_interval_jitter requires string field names")
+            match = re.fullmatch(r"(.+)__s(12|24|36)", key)
+            if match is None:
+                raise ValueError(
+                    "unit_interval_jitter requires complete __s12/__s24/__s36 "
+                    f"triplets; unsupported field={key!r}"
+                )
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(
+                    "unit_interval_jitter requires numeric unit-interval fields"
+                )
+            numeric = float(value)
+            if not math.isfinite(numeric) or not 0.0 <= numeric <= 1.0:
+                raise ValueError(
+                    "unit_interval_jitter requires finite values in [0, 1]"
+                )
+            grouped.setdefault(match.group(1), set()).add(match.group(2))
+        incomplete = sorted(
+            prefix
+            for prefix, horizons in grouped.items()
+            if horizons != {"12", "24", "36"}
+        )
+        if incomplete:
+            raise ValueError(
+                "unit_interval_jitter requires complete survival triplets; "
+                f"incomplete={incomplete[:5]}"
+            )
+
+    @staticmethod
+    def _canonical_candidate_identity(answer: str, schema: type[BaseModel]) -> str:
+        parsed = schema.model_validate_json(answer)
+        return json.dumps(
+            parsed.model_dump(mode="json"),
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    @staticmethod
+    def _continuation_after_generation_prefix(answer: str, prefix: str) -> str:
+        stripped = answer.lstrip()
+        if prefix and stripped.startswith(prefix):
+            return stripped[len(prefix) :]
+        return answer
+
+    def _unit_interval_jitter_candidate(
+        self,
+        primary_data: dict[str, Any],
+        schema: type[BaseModel],
+        *,
+        proposal_seed: int,
+    ) -> str:
+        self._validate_unit_interval_triplet_payload(primary_data)
+        rng = random.Random(proposal_seed)
+        proposed = dict(primary_data)
+        prefixes = sorted({key.rsplit("__s", 1)[0] for key in primary_data})
+
+        def logit(value: float) -> float:
+            clipped = min(max(value, 1e-6), 1.0 - 1e-6)
+            return math.log(clipped / (1.0 - clipped))
+
+        def sigmoid(value: float) -> float:
+            if value >= 0:
+                z = math.exp(-value)
+                return 1.0 / (1.0 + z)
+            z = math.exp(value)
+            return z / (1.0 + z)
+
+        for prefix in prefixes:
+            level_noise = rng.gauss(0.0, _GROUP_PG_PROPOSAL_JITTER_SCALE)
+            slope_noise = rng.gauss(0.0, _GROUP_PG_PROPOSAL_JITTER_SCALE / 3.0)
+            values = []
+            for horizon, slope_sign in (("12", 1.0), ("24", 0.0), ("36", -1.0)):
+                key = f"{prefix}__s{horizon}"
+                shifted = logit(float(primary_data[key])) + level_noise
+                shifted += slope_sign * slope_noise
+                values.append(sigmoid(shifted))
+            s12, s24, s36 = sorted(values, reverse=True)
+            proposed[f"{prefix}__s12"] = round(s12, 6)
+            proposed[f"{prefix}__s24"] = round(s24, 6)
+            proposed[f"{prefix}__s36"] = round(s36, 6)
+
+        parsed = schema.model_validate(proposed)
+        answer = parsed.model_dump_json()
+        self._validate_unit_interval_triplet_payload(parsed.model_dump(mode="json"))
+        return answer
 
     def _derive_grpo_candidate_seed(
         self,
@@ -1834,12 +2366,26 @@ class QwenLocalSystem(ContinualLearningSystem):
             return
         lazy = pending.get("lazy_generation")
         candidates = pending.get("candidates")
-        if not isinstance(lazy, dict) or not isinstance(candidates, list) or not candidates:
+        if (
+            not isinstance(lazy, dict)
+            or not isinstance(candidates, list)
+            or not candidates
+        ):
             return
         expected_signature = tuple(lazy.get("update_signature") or ())
         if expected_signature != self._grpo_update_signature():
             raise RuntimeError(
                 "Group-PG policy changed between pre-commit recipe and terminal sampling"
+            )
+        if lazy.get("candidate_proposer") != self.grpo_candidate_proposer:
+            raise RuntimeError(
+                "Candidate proposer changed between pre-commit recipe and terminal "
+                "materialization"
+            )
+        if lazy.get("objective") != self._grpo_objective_name():
+            raise RuntimeError(
+                "Instance-group objective changed between pre-commit recipe and "
+                "terminal materialization"
             )
 
         import torch
@@ -1849,7 +2395,9 @@ class QwenLocalSystem(ContinualLearningSystem):
             device = next(self._model.parameters()).device
             if device.type == "cuda":
                 cuda_devices = [
-                    torch.cuda.current_device() if device.index is None else device.index
+                    torch.cuda.current_device()
+                    if device.index is None
+                    else device.index
                 ]
 
         timeout_s = int(os.environ.get("CLBENCH_INSTANCE_TIMEOUT", "0") or 0)
@@ -1858,6 +2406,7 @@ class QwenLocalSystem(ContinualLearningSystem):
         )
         previous_handler = None
         if use_alarm:
+
             def _on_alarm(signum, frame):
                 raise TimeoutError(
                     "deferred GRPO candidate generation exceeded "
@@ -1896,6 +2445,7 @@ class QwenLocalSystem(ContinualLearningSystem):
                     int(lazy["max_new_tokens"]),
                     force_sample=True,
                     primary_continuation=str(lazy["primary_continuation"]),
+                    sampling_seed=sampling_seed,
                 )
         finally:
             if use_alarm:
@@ -1928,17 +2478,18 @@ class QwenLocalSystem(ContinualLearningSystem):
                     score_structured_predictions,
                     score_structured_predictions_for_year,
                 )
+
                 preds = schema.model_validate_json(cand).predictions
                 rf = self.bon_env_reward
+
                 def near() -> float:
                     return score_structured_predictions_for_year(
                         preds, meta["nearyear_gt"], year=int(meta["nearyear"])
                     ).score
 
                 def final() -> float:
-                    return score_structured_predictions(
-                        preds, meta["final_gt"]
-                    ).score
+                    return score_structured_predictions(preds, meta["final_gt"]).score
+
                 if rf == "final" and meta.get("final_gt") is not None:
                     return final()
                 if rf == "both" and meta.get("final_gt") is not None:
@@ -1954,6 +2505,7 @@ class QwenLocalSystem(ContinualLearningSystem):
                     CohortGroundTruth,
                     score_cohort_report,
                 )
+
                 estimates = parse_flat_submission(schema.model_validate_json(cand))
                 gt = {
                     cid: CohortGroundTruth(**g) for cid, g in meta["cohort_gt"].items()
@@ -1973,10 +2525,14 @@ class QwenLocalSystem(ContinualLearningSystem):
                     _interval_set_measure,
                     _interval_bounds,
                 )
+
                 rep = schema.model_validate_json(cand)
                 bw = float(meta["bsm_band_width"])
                 rep_occ = _normalize_intervals(
-                    [_interval_bounds(t.center_freq, t.bandwidth) for t in rep.transmitters],
+                    [
+                        _interval_bounds(t.center_freq, t.bandwidth)
+                        for t in rep.transmitters
+                    ],
                     band_end=bw,
                 )
                 rep_avail = _complement_intervals(rep_occ, band_end=bw)
@@ -2035,7 +2591,11 @@ class QwenLocalSystem(ContinualLearningSystem):
         if pos is None:
             return
         batches.append(pos)
-        if self.distill_contrastive and self.reward_negative_weight > 0 and worst != best:
+        if (
+            self.distill_contrastive
+            and self.reward_negative_weight > 0
+            and worst != best
+        ):
             neg = self._build_distill_batch(
                 prompt_text, worst, -self.reward_negative_weight
             )
@@ -2055,22 +2615,21 @@ class QwenLocalSystem(ContinualLearningSystem):
     def _grpo_instance_update(
         self, pending: dict[str, Any], scored: list[tuple[float, str]]
     ) -> None:
-        """D2: instance-level group-normalized PG over an env-BoN group.
+        """D2: instance-level group-normalized update over an env-scored group.
 
         At instance completion the revealed ground truth counterfactually scores
         every stashed candidate (legal only on pure-function tasks — the extra
         candidates never touched the environment; same post-commit compliance as
-        the bonenv SFT path). The exact sampling prompt and continuation are used
-        for each signed CE term. Their mean forms one REINFORCE-style objective,
-        followed by exactly one optimizer step. This is deliberately labelled
-        group-normalized policy gradient, not canonical GRPO: there is no frozen
-        old-policy importance ratio or KL term.
+        the bonenv SFT path). Policy-sampled groups use exact sampling prompts and
+        continuations for a REINFORCE-style objective. Structured proposal groups
+        are explicitly labelled candidate distillation, because their signed CE
+        terms are off-policy and are not a policy-gradient estimator.
         """
         rewards = [reward for reward, _ in scored]
         k = len(rewards)
         mean_r = sum(rewards) / k
         var = sum((reward - mean_r) ** 2 for reward in rewards) / k
-        std = var ** 0.5
+        std = var**0.5
         committed = pending["candidates"][0]
         committed_reward = next(
             (reward for reward, cand in scored if cand == committed), None
@@ -2083,7 +2642,7 @@ class QwenLocalSystem(ContinualLearningSystem):
             "group_size": k,
             "reward_mean": round(mean_r, 6),
             "reward_std": round(std, 6),
-            "objective": _INSTANCE_GROUP_PG_OBJECTIVE,
+            "objective": pending.get("objective", self._grpo_objective_name()),
         }
         self._add_grpo_sampling_provenance(log_entry, pending)
         if committed_reward is not None:
@@ -2100,9 +2659,7 @@ class QwenLocalSystem(ContinualLearningSystem):
             return
         prompt_for_attempt = pending.get("prompt_for_attempt")
         generation_prefix = pending.get("generation_prefix")
-        if isinstance(prompt_for_attempt, str) and isinstance(
-            generation_prefix, str
-        ):
+        if isinstance(prompt_for_attempt, str) and isinstance(generation_prefix, str):
             prompt_text = prompt_for_attempt + generation_prefix
         else:
             # Compatibility only for hand-built legacy unit fixtures. Actual D2
@@ -2131,9 +2688,7 @@ class QwenLocalSystem(ContinualLearningSystem):
             advantage = (reward - mean_r) / std
             advantage = max(min(advantage, clip), -clip)
             continuation = continuation_by_answer.get(cand, cand)
-            batch = self._build_distill_batch(
-                prompt_text, continuation, advantage
-            )
+            batch = self._build_distill_batch(prompt_text, continuation, advantage)
             if batch is not None:
                 batches.append(batch)
         if not batches:
@@ -2174,6 +2729,15 @@ class QwenLocalSystem(ContinualLearningSystem):
             )
             return
         self._ensure_lora_model()
+        verify_frozen_weights = (
+            self.grpo_candidate_proposer == "unit_interval_jitter"
+            and float(self.reward_pg_lr) == 0.0
+        )
+        trainable_hash_before = None
+        if verify_frozen_weights:
+            trainable_hash_before = self._trainable_param_sha256()
+            if self.grpo_trainable_param_sha256_initial is None:
+                self.grpo_trainable_param_sha256_initial = trainable_hash_before
         optimizer_steps_before = self.grpo_optimizer_steps
         self.last_grpo_loss = self._train_lora_group_objective(
             batches, lr=self.reward_pg_lr
@@ -2184,18 +2748,53 @@ class QwenLocalSystem(ContinualLearningSystem):
                 "Group-PG update must perform exactly one optimizer step; "
                 f"observed {optimizer_steps}"
             )
+        if verify_frozen_weights:
+            trainable_hash_after = self._trainable_param_sha256()
+            self.grpo_trainable_param_sha256_current = trainable_hash_after
+            log_entry["trainable_param_sha256_before"] = trainable_hash_before
+            log_entry["trainable_param_sha256_after"] = trainable_hash_after
+            if trainable_hash_before != trainable_hash_after:
+                raise RuntimeError(
+                    "LR0 candidate-distillation gate changed trainable parameters"
+                )
         self.grpo_updates += 1
         log_entry["loss"] = round(self.last_grpo_loss, 8)
         log_entry["n_batches"] = len(batches)
         log_entry["optimizer_steps"] = optimizer_steps
         self._append_grpo_log(log_entry)
+        label = (
+            "group-pg-inst"
+            if self.grpo_candidate_proposer == "policy_sample"
+            else "candidate-distill-inst"
+        )
         print(
-            f"[group-pg-inst] k={k} mean={mean_r:.4f} std={std:.4f} "
+            f"[{label}] k={k} mean={mean_r:.4f} std={std:.4f} "
             f"committed={committed_reward if committed_reward is None else round(committed_reward, 4)} "
             f"batches={len(batches)} loss={self.last_grpo_loss:.6f} "
             f"update#{self.grpo_updates}",
             flush=True,
         )
+
+    def _trainable_param_sha256(self) -> str:
+        import torch
+
+        if self._model is None:
+            raise RuntimeError("Cannot hash trainable parameters before model setup")
+        digest = hashlib.sha256()
+        trainable = [
+            (name, parameter)
+            for name, parameter in self._model.named_parameters()
+            if parameter.requires_grad
+        ]
+        if not trainable:
+            raise RuntimeError(
+                "Candidate-distillation gate found no trainable parameters"
+            )
+        for name, parameter in sorted(trainable, key=lambda item: item[0]):
+            digest.update(name.encode("utf-8"))
+            raw = parameter.detach().contiguous().view(torch.uint8)
+            digest.update(raw.cpu().numpy().tobytes())
+        return digest.hexdigest()
 
     def _append_grpo_log(self, entry: dict[str, Any]) -> None:
         self._grpo_instance_log.append(entry)
@@ -2206,7 +2805,14 @@ class QwenLocalSystem(ContinualLearningSystem):
     def _add_grpo_sampling_provenance(
         entry: dict[str, Any], pending: dict[str, Any]
     ) -> None:
-        entry.setdefault("objective", _INSTANCE_GROUP_PG_OBJECTIVE)
+        objective = pending.get("objective")
+        entry.setdefault(
+            "objective",
+            objective if isinstance(objective, str) else _INSTANCE_GROUP_PG_OBJECTIVE,
+        )
+        proposer = pending.get("candidate_proposer")
+        if isinstance(proposer, str):
+            entry["candidate_proposer"] = proposer
         for key in (
             "grpo_run_seed",
             "sampling_seed",
@@ -2220,9 +2826,7 @@ class QwenLocalSystem(ContinualLearningSystem):
         if isinstance(pending.get("seed_instance_id"), str):
             entry["seed_instance_id"] = pending["seed_instance_id"]
         if isinstance(pending.get("sampling_prompt_sha256"), str):
-            entry["sampling_prompt_sha256"] = pending[
-                "sampling_prompt_sha256"
-            ]
+            entry["sampling_prompt_sha256"] = pending["sampling_prompt_sha256"]
         if isinstance(pending.get("candidate_sampling"), dict):
             entry["candidate_sampling"] = dict(pending["candidate_sampling"])
         elapsed = pending.get("candidate_generation_seconds")
@@ -2498,7 +3102,11 @@ class QwenLocalSystem(ContinualLearningSystem):
             if stripped.startswith("{"):
                 return generated
             return prefix + generated
-        if stripped.startswith(prefix) or stripped.startswith('{"predictions"') or stripped.startswith('{"thought"'):
+        if (
+            stripped.startswith(prefix)
+            or stripped.startswith('{"predictions"')
+            or stripped.startswith('{"thought"')
+        ):
             return generated
         return prefix + generated
 
@@ -2557,7 +3165,7 @@ class QwenLocalSystem(ContinualLearningSystem):
         if "predictions" in schema.model_fields:
             instruction += (
                 " You are in FINAL FORECAST SUBMISSION mode. Output exactly one "
-                "JSON object with top-level key \"predictions\". Do not include "
+                'JSON object with top-level key "predictions". Do not include '
                 "thought, command, or tool_call. A response with a command key, "
                 "including echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT, is invalid "
                 "because the shell step is already over. Start the retry exactly "
@@ -2673,13 +3281,13 @@ class QwenLocalSystem(ContinualLearningSystem):
         if "command" in schema.model_fields:
             instruction += (
                 '\nFormat example: {"thought": "brief reason", '
-                "\"command\": \"python -c 'print(1)'\"}"
+                '"command": "python -c \'print(1)\'"}'
                 "\nDo not output forecasts, patches, or final answers directly "
                 "while this schema asks for a command. If you are ready to "
                 "finish, issue the benchmark's explicit submit command."
                 "\nThe command JSON string must be complete and parseable. "
                 "Do not put raw double quote characters inside the command "
-                "string; escape them as \\\" or use single quotes inside the "
+                'string; escape them as \\" or use single quotes inside the '
                 "shell/Python code. Prefer short commands whose Python string "
                 "literals use single quotes."
                 "\nFor code search, keep the command short. If you need "
@@ -2690,7 +3298,7 @@ class QwenLocalSystem(ContinualLearningSystem):
         if "tool_call" in schema.model_fields:
             instruction += (
                 "\nDo not output tool arguments or a final report directly at the "
-                'top level. Always wrap the selected tool invocation inside the '
+                "top level. Always wrap the selected tool invocation inside the "
                 '"tool_call" field and include a "thought" string.'
                 '\nFormat example: {"thought": "brief reason", '
                 '"tool_call": {"tool": "get_database_metadata"}}'
@@ -2807,12 +3415,8 @@ class QwenLocalSystem(ContinualLearningSystem):
     def _has_unit_interval_fields(self, schema: type[BaseModel]) -> bool:
         bounded = 0
         for field in schema.model_fields.values():
-            has_ge_zero = any(
-                getattr(meta, "ge", None) == 0 for meta in field.metadata
-            )
-            has_le_one = any(
-                getattr(meta, "le", None) == 1 for meta in field.metadata
-            )
+            has_ge_zero = any(getattr(meta, "ge", None) == 0 for meta in field.metadata)
+            has_le_one = any(getattr(meta, "le", None) == 1 for meta in field.metadata)
             if has_ge_zero and has_le_one:
                 bounded += 1
         return bounded > 20
@@ -2841,25 +3445,19 @@ class QwenLocalSystem(ContinualLearningSystem):
             )
             if stray_paren_repair is not None and stray_paren_repair != candidate:
                 add_candidate(stray_paren_repair, True)
-            null_thinking_repair = self._repair_null_thinking_string(
+            null_thinking_repair = self._repair_null_thinking_string(candidate, schema)
+            add_candidate(null_thinking_repair, True)
+            description_thinking_repair = self._repair_description_alias_for_thinking(
                 candidate, schema
             )
-            add_candidate(null_thinking_repair, True)
-            description_thinking_repair = (
-                self._repair_description_alias_for_thinking(candidate, schema)
-            )
             add_candidate(description_thinking_repair, True)
-            numeric_quote_repair = self._repair_numeric_value_trailing_quote(
-                candidate
-            )
+            numeric_quote_repair = self._repair_numeric_value_trailing_quote(candidate)
             add_candidate(numeric_quote_repair, True)
             duplicate_bracket_repair = (
                 self._repair_duplicate_closing_bracket_before_object_end(candidate)
             )
             add_candidate(duplicate_bracket_repair, True)
-            unquoted_key_repair = self._repair_unquoted_tool_call_key(
-                candidate, schema
-            )
+            unquoted_key_repair = self._repair_unquoted_tool_call_key(candidate, schema)
             add_candidate(unquoted_key_repair, True)
             missing_thought_repair = self._repair_missing_command_thought(
                 candidate, schema
@@ -3045,7 +3643,10 @@ class QwenLocalSystem(ContinualLearningSystem):
         key rename only; schema validation still decides whether the repaired
         object is acceptable.
         """
-        if "thinking" not in schema.model_fields or "description" in schema.model_fields:
+        if (
+            "thinking" not in schema.model_fields
+            or "description" in schema.model_fields
+        ):
             return None
         try:
             data = json.loads(text)
@@ -3108,7 +3709,7 @@ class QwenLocalSystem(ContinualLearningSystem):
         candidate = text.strip()
         if not candidate.startswith("{"):
             return None
-        repaired = re.sub(r'([,{]\s*)tool_call\s*:', r'\1"tool_call":', candidate)
+        repaired = re.sub(r"([,{]\s*)tool_call\s*:", r'\1"tool_call":', candidate)
         if repaired == candidate:
             return None
         return self._repair_truncated_json_object(repaired) or repaired

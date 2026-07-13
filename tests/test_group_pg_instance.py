@@ -1,4 +1,5 @@
 """CPU unit smoke for D2 grpo_instance (no GPU needed). Run from repo root."""
+
 import json
 import sys
 from types import SimpleNamespace
@@ -61,19 +62,31 @@ check(
     and g.parameter_updates_enabled is True,
 )
 meta = g._grpo_usage_metadata()
-check("grpo usage-metadata populated", meta.get("grpo_updates") == 0 and "last_grpo_loss" in meta)
+check(
+    "grpo usage-metadata populated",
+    meta.get("grpo_updates") == 0 and "last_grpo_loss" in meta,
+)
 check(
     "honest objective label",
     meta.get("grpo_objective") == "group_normalized_policy_gradient",
 )
 arts = g.get_run_artifacts()
-check("grpo artifacts populated", "grpo_instance_log" in arts and arts["grpo_updates"] == 0)
-check("grpo artifacts json-serializable", json.dumps(arts.get("grpo_instance_log")) == "[]")
+check(
+    "grpo artifacts populated",
+    "grpo_instance_log" in arts and arts["grpo_updates"] == 0,
+)
+check(
+    "grpo artifacts json-serializable",
+    json.dumps(arts.get("grpo_instance_log")) == "[]",
+)
 
 # 3. invalid combos raise
 for kw, name in [
     ({"reward_update_rule": "grpo_instance", "best_of_n": 1}, "reject best_of_n=1"),
-    ({"reward_update_rule": "grpo_instance", "bon_critic": "llm"}, "reject bon_critic=llm"),
+    (
+        {"reward_update_rule": "grpo_instance", "bon_critic": "llm"},
+        "reject bon_critic=llm",
+    ),
     ({"reward_update_rule": "grpo_instance", "grpo_adv_clip": 0.0}, "reject clip=0"),
     ({"reward_update_rule": "group_pg_instance", "grpo_run_seed": -1}, "reject seed<0"),
     ({"freeze_parameter_updates": True}, "reject frozen switch on old rule"),
@@ -92,7 +105,9 @@ g2._last_action_training_ids = [1, 2, 3]
 g2._last_action_prompt_tokens = 1
 called = []
 g2._infer_feedback_reward = lambda obs: called.append("reward") or 1.0
-obs = SimpleNamespace(content="", metadata={"env_feedback_reward": 0.7}, instance_complete=True)
+obs = SimpleNamespace(
+    content="", metadata={"env_feedback_reward": 0.7}, instance_complete=True
+)
 g2._adapt_from_feedback(obs)
 check("per-step PG bypassed", called == [] and g2.reward_pg_updates == 0)
 
@@ -101,23 +116,33 @@ g3 = QwenLocalSystem(**{**OLD_KW, "reward_update_rule": "grpo_instance"})
 g3.reset()
 captured = {}
 g3._ensure_lora_model = lambda: None
+
+
 def fake_train(batches, *, lr):
     captured["batches"] = batches
     captured["lr"] = lr
     return 0.123
+
+
 def attach_fake_group_trainer(system):
     def fake_group_train(batches, *, lr):
         captured["batches"] = batches
         captured["lr"] = lr
         system.grpo_optimizer_steps += 1
         return 0.123
+
     system._train_lora_group_objective = fake_group_train
+
 
 attach_fake_group_trainer(g3)
 g3._render_generation_prompt = lambda msgs: "PROMPT: " + msgs[0]["content"]
+
+
 def fake_build(prompt_text, cand, weight):
     captured.setdefault("prompt_targets", []).append((prompt_text, cand))
     return {"ids": [1] * 16, "prompt_tokens": 8, "signed_weight": weight}
+
+
 g3._build_distill_batch = fake_build
 pending = {
     "query_text": "q",
@@ -125,9 +150,9 @@ pending = {
     "schema": None,
     "prompt_for_attempt": "EXACT_PROMPT",
     "generation_prefix": "PREFIX",
-    "sampling_prompt_sha256": __import__("hashlib").sha256(
-        b"EXACT_PROMPTPREFIX"
-    ).hexdigest(),
+    "sampling_prompt_sha256": __import__("hashlib")
+    .sha256(b"EXACT_PROMPTPREFIX")
+    .hexdigest(),
     "candidate_records": [
         {"answer": "A", "continuation": "raw-A"},
         {"answer": "B", "continuation": "raw-B"},
@@ -142,7 +167,8 @@ check("grpo lr = reward_pg_lr", captured["lr"] == 1e-4)
 check("group advantages include zero-weight member", ws == [1.2247, -1.2247, 0.0])
 check(
     "training uses exact sampled prompt and continuations",
-    captured["prompt_targets"] == [
+    captured["prompt_targets"]
+    == [
         ("EXACT_PROMPTPREFIX", "raw-A"),
         ("EXACT_PROMPTPREFIX", "raw-B"),
         ("EXACT_PROMPTPREFIX", "raw-C"),
@@ -151,8 +177,7 @@ check(
 check("grpo committed reward logged", g3.last_grpo_committed_reward == 0.9)
 check(
     "grpo group stats",
-    g3.last_grpo_group_size == 3
-    and round(g3.last_grpo_reward_std, 4) == 0.3266,
+    g3.last_grpo_group_size == 3 and round(g3.last_grpo_reward_std, 4) == 0.3266,
 )
 check(
     "one optimizer step per group",
@@ -168,16 +193,12 @@ captured.clear()
 g3._grpo_instance_update(pending, [(0.5, "A"), (0.5, "B"), (0.5, "C")])
 check(
     "low-std skip",
-    g3.grpo_skipped_low_std == 1
-    and "batches" not in captured
-    and g3.grpo_updates == 1,
+    g3.grpo_skipped_low_std == 1 and "batches" not in captured and g3.grpo_updates == 1,
 )
 
 # 6b. Never claim exact-prompt PG when truncation retained zero prompt tokens.
 captured.clear()
-g_trunc = QwenLocalSystem(
-    **{**OLD_KW, "reward_update_rule": "group_pg_instance"}
-)
+g_trunc = QwenLocalSystem(**{**OLD_KW, "reward_update_rule": "group_pg_instance"})
 g_trunc.reset()
 g_trunc._ensure_lora_model = lambda: None
 attach_fake_group_trainer(g_trunc)
@@ -196,7 +217,9 @@ check(
 
 # 7. adv clip honored
 captured.clear()
-g4 = QwenLocalSystem(**{**OLD_KW, "reward_update_rule": "grpo_instance", "grpo_adv_clip": 1.0})
+g4 = QwenLocalSystem(
+    **{**OLD_KW, "reward_update_rule": "grpo_instance", "grpo_adv_clip": 1.0}
+)
 g4.reset()
 g4._ensure_lora_model = lambda: None
 attach_fake_group_trainer(g4)
@@ -217,12 +240,12 @@ score_map = {"A": 0.9, "B": 0.1, "C": 0.5}
 g5._score_env_candidate = lambda cand, schema, meta: score_map.get(cand)
 g5._pending_env_bon = dict(pending)
 captured.clear()
-g5._env_best_of_n_train(SimpleNamespace(content="", metadata={}, instance_complete=True))
+g5._env_best_of_n_train(
+    SimpleNamespace(content="", metadata={}, instance_complete=True)
+)
 check(
     "observe-path group-PG dispatch",
-    g5.grpo_updates == 1
-    and g5.bon_updates == 0
-    and len(captured["batches"]) == 3,
+    g5.grpo_updates == 1 and g5.bon_updates == 0 and len(captured["batches"]) == 3,
 )
 
 # 8b. Baseline/frozen execution must skip the post-instance GRPO update.
@@ -244,9 +267,7 @@ g5_frozen._build_distill_batch = fake_build
 g5_frozen._score_env_candidate = lambda cand, schema, meta: score_map.get(cand)
 g5_frozen._pending_env_bon = dict(pending)
 captured.clear()
-g5_frozen.observe(
-    SimpleNamespace(content="", metadata={}, instance_complete=True)
-)
+g5_frozen.observe(SimpleNamespace(content="", metadata={}, instance_complete=True))
 check(
     "training-disabled GRPO is frozen",
     g5_frozen.grpo_updates == 0
@@ -263,9 +284,7 @@ check(
     g5_frozen._grpo_usage_metadata().get("freeze_parameter_updates") is True,
 )
 try:
-    fail_closed = QwenLocalSystem(
-        **{**OLD_KW, "reward_update_rule": "grpo_instance"}
-    )
+    fail_closed = QwenLocalSystem(**{**OLD_KW, "reward_update_rule": "grpo_instance"})
     fail_closed.set_parameter_updates_enabled(False)
     fail_closed._train_lora_token_batches([], lr=1e-4)
     check("frozen trainer fails closed", False)
@@ -286,13 +305,13 @@ o2._build_distill_batch = fake_build
 o2._score_env_candidate = lambda cand, schema, meta: score_map.get(cand)
 o2._pending_env_bon = dict(pending)
 captured.clear()
-o2._env_best_of_n_train(SimpleNamespace(content="", metadata={}, instance_complete=True))
+o2._env_best_of_n_train(
+    SimpleNamespace(content="", metadata={}, instance_complete=True)
+)
 ws = [round(b["signed_weight"], 4) for b in captured["batches"]]
 check(
     "old bonenv path unchanged (best +1.0, worst -0.25=default)",
-    o2.bon_updates == 1
-    and o2.grpo_updates == 0
-    and ws == [1.0, -0.25],
+    o2.bon_updates == 1 and o2.grpo_updates == 0 and ws == [1.0, -0.25],
 )
 
 # 9. single-candidate group -> no_group skip counter
@@ -300,8 +319,11 @@ g6 = QwenLocalSystem(**{**OLD_KW, "reward_update_rule": "grpo_instance"})
 g6.reset()
 g6._score_env_candidate = lambda cand, schema, meta: 0.9 if cand == "A" else None
 g6._pending_env_bon = {"query_text": "q", "candidates": ["A", "B"], "schema": None}
-g6._env_best_of_n_train(SimpleNamespace(content="", metadata={}, instance_complete=True))
+g6._env_best_of_n_train(
+    SimpleNamespace(content="", metadata={}, instance_complete=True)
+)
 check("no-group skip", g6.grpo_skipped_no_group == 1 and g6.grpo_updates == 0)
+
 
 # 10. D2 lazily samples only the terminal candidate group; old bonenv stays eager.
 def stub_candidate_generation(system):
@@ -394,17 +416,14 @@ check(
     len(eager_calls) == 2 and "lazy_generation" not in eager._pending_env_bon,
 )
 
-no_pending = QwenLocalSystem(
-    **{**OLD_KW, "reward_update_rule": "grpo_instance"}
-)
+no_pending = QwenLocalSystem(**{**OLD_KW, "reward_update_rule": "grpo_instance"})
 no_pending.reset()
-no_pending.observe(
-    SimpleNamespace(content="", metadata={}, instance_complete=True)
-)
+no_pending.observe(SimpleNamespace(content="", metadata={}, instance_complete=True))
 check(
     "terminal response failure is accounted",
     no_pending.grpo_skipped_no_group == 1
-    and no_pending._grpo_instance_log == [
+    and no_pending._grpo_instance_log
+    == [
         {
             "group_size": 0,
             "skipped": "no_pending",
@@ -457,17 +476,67 @@ check(
     fake_model.kwargs.get("use_cache") is True,
 )
 
-# 12. The real group trainer evaluates all members under one policy and steps once.
+
+# 12. The real chunked group trainer evaluates one policy and steps exactly once.
+class TinyGroupDecoder(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.embedding = torch.nn.Embedding(16, 4)
+        self.embedding.requires_grad_(False)
+        self.adapter_scale = torch.nn.Parameter(torch.tensor(0.25))
+
+    def forward(self, input_ids):
+        embedded = self.embedding(input_ids)
+        return SimpleNamespace(
+            last_hidden_state=embedded + self.adapter_scale * torch.tanh(embedded)
+        )
+
+
+class RecordingGroupHead(torch.nn.Linear):
+    def __init__(self):
+        super().__init__(4, 16, bias=False)
+        self.requires_grad_(False)
+        self.token_counts = []
+
+    def forward(self, hidden_states):
+        self.token_counts.append(hidden_states.shape[-2])
+        return super().forward(hidden_states)
+
+
 class TinyGroupModel(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        self.weight = torch.nn.Parameter(torch.tensor(0.25))
+        self.model = TinyGroupDecoder()
+        self.lm_head = RecordingGroupHead()
         self.forward_weights = []
+        self.logits_to_keep = []
+        self.checkpoint_kwargs = None
 
-    def forward(self, input_ids, labels):
-        self.forward_weights.append(float(self.weight.detach()))
-        target = input_ids.float().mean() / 10.0
-        return SimpleNamespace(loss=(self.weight - target) ** 2)
+    def get_base_model(self):
+        return self
+
+    def get_output_embeddings(self):
+        return self.lm_head
+
+    def gradient_checkpointing_enable(self, **kwargs):
+        self.checkpoint_kwargs = kwargs
+
+    def forward(
+        self,
+        input_ids,
+        *,
+        labels,
+        use_cache,
+        logits_to_keep,
+        return_dict,
+    ):
+        assert labels is None and use_cache is False and return_dict is True
+        self.forward_weights.append(float(self.model.adapter_scale.detach()))
+        self.logits_to_keep.append(logits_to_keep)
+        hidden_states = self.model(input_ids).last_hidden_state
+        return SimpleNamespace(
+            logits=self.lm_head(hidden_states[:, -logits_to_keep:, :])
+        )
 
 
 class SpyOptimizer:
@@ -483,15 +552,14 @@ class SpyOptimizer:
         self.step_calls += 1
 
 
-group_real = QwenLocalSystem(
-    **{**OLD_KW, "reward_update_rule": "group_pg_instance"}
-)
+group_real = QwenLocalSystem(**{**OLD_KW, "reward_update_rule": "group_pg_instance"})
 group_real._model = TinyGroupModel()
 group_real.set_parameter_updates_enabled(True)
 group_real._clip_trainable_param_norms = lambda params: None
 real_adamw = torch.optim.AdamW
 optimizer_spy = None
 try:
+
     def make_spy_optimizer(params, lr):
         global optimizer_spy
         optimizer_spy = SpyOptimizer(params, lr)
@@ -517,6 +585,16 @@ check(
 check(
     "all candidates evaluated under identical pre-update policy",
     group_real._model.forward_weights == [0.25, 0.25, 0.25],
+)
+check(
+    "group forward materializes one-token logits only",
+    group_real._model.logits_to_keep == [1, 1, 1]
+    and max(group_real._model.lm_head.token_counts) <= 128,
+)
+check(
+    "group trainer enables non-reentrant gradient checkpointing",
+    group_real._model.checkpoint_kwargs
+    == {"gradient_checkpointing_kwargs": {"use_reentrant": False}},
 )
 
 print("=" * 40)
