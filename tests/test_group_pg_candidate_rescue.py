@@ -200,12 +200,15 @@ class _UnitIntervalSubmission(BaseModel):
     beta__s36: float = Field(ge=0, le=1)
 
 
-def _structured_system(*, run_seed: int = 77) -> QwenLocalSystem:
+def _structured_system(
+    *, run_seed: int = 77, adapter_seed: int | None = None
+) -> QwenLocalSystem:
     system = QwenLocalSystem(
         best_of_n=4,
         bon_critic="env",
         reward_update_rule="candidate_distill_instance",
         grpo_run_seed=run_seed,
+        grpo_adapter_init_seed=adapter_seed,
         grpo_candidate_proposer="unit_interval_jitter",
     )
     system.reset()
@@ -215,8 +218,10 @@ def _structured_system(*, run_seed: int = 77) -> QwenLocalSystem:
     return system
 
 
-def _structured_materialize(*, run_seed: int = 77) -> dict:
-    system = _structured_system(run_seed=run_seed)
+def _structured_materialize(
+    *, run_seed: int = 77, adapter_seed: int | None = None
+) -> dict:
+    system = _structured_system(run_seed=run_seed, adapter_seed=adapter_seed)
     primary = _UnitIntervalSubmission(
         alpha__s12=0.8,
         alpha__s24=0.5,
@@ -288,6 +293,12 @@ def test_unit_interval_proposer_is_deterministic_diverse_and_schema_valid() -> N
         record["source"] == "unit_interval_jitter"
         for record in first["candidate_records"][1:]
     )
+
+
+def test_structured_materialization_preserves_adapter_seed_provenance() -> None:
+    pending = _structured_materialize(adapter_seed=2026071200)
+
+    assert pending["grpo_adapter_init_seed"] == 2026071200
 
 
 def test_unit_interval_proposer_uses_independent_run_seed_streams() -> None:
@@ -494,3 +505,51 @@ def test_candidate_proposer_configuration_is_fail_closed(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         QwenLocalSystem(**params)
+
+
+@pytest.mark.parametrize(
+    "adapter_seed",
+    [True, -1, 1.5, "2026071200"],
+)
+def test_adapter_init_seed_configuration_is_fail_closed(adapter_seed: object) -> None:
+    with pytest.raises(ValueError, match="grpo_adapter_init_seed"):
+        QwenLocalSystem(grpo_adapter_init_seed=adapter_seed)
+
+
+def test_adapter_init_seed_is_deterministic_and_restores_cpu_rng() -> None:
+    def draw(*, adapter_seed: int, ambient_seed: int) -> tuple[float, float]:
+        system = QwenLocalSystem(
+            best_of_n=2,
+            bon_critic="env",
+            reward_update_rule="candidate_distill_instance",
+            grpo_candidate_proposer="unit_interval_jitter",
+            grpo_adapter_init_seed=adapter_seed,
+        )
+        system._model = torch.nn.Linear(1, 1)
+        torch.manual_seed(ambient_seed)
+        expected_after = torch.rand(())
+        torch.manual_seed(ambient_seed)
+        adapter_draw = system._install_peft_adapter(
+            object(), lambda _model, _config: torch.rand(())
+        )
+        observed_after = torch.rand(())
+        assert torch.equal(observed_after, expected_after)
+        return float(adapter_draw), float(observed_after)
+
+    first, _ = draw(adapter_seed=2026071200, ambient_seed=11)
+    second, _ = draw(adapter_seed=2026071200, ambient_seed=999)
+    different, _ = draw(adapter_seed=2026071201, ambient_seed=11)
+
+    assert first == second
+    assert first != different
+
+
+def test_default_adapter_seed_does_not_change_instance_metadata_shape() -> None:
+    system = QwenLocalSystem(
+        best_of_n=2,
+        bon_critic="env",
+        reward_update_rule="candidate_distill_instance",
+        grpo_candidate_proposer="unit_interval_jitter",
+    )
+
+    assert "grpo_adapter_init_seed" not in system._grpo_usage_metadata()

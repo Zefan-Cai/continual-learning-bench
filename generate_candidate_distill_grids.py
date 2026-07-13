@@ -17,6 +17,8 @@ from typing import Any
 
 
 FORMAL_SEEDS = (2026071201, 2026071202, 2026071203)
+ADAPTER_INIT_SEED = 2026071200
+EXPERIMENT_REVISION = f"v3_adapterseed{ADAPTER_INIT_SEED}"
 TASK_ORDER_SEED = 42
 NUM_INSTANCES = 20
 GRID_NAME = "grid_candidate_distill_formal.json"
@@ -54,6 +56,7 @@ COMMON_SYSTEM_PARAMS: dict[str, Any] = {
     "ttt_steps": 1,
     "bon_env_reward": "near",
     "reward_update_rule": "candidate_distill_instance",
+    "grpo_adapter_init_seed": ADAPTER_INIT_SEED,
     "grpo_candidate_proposer": "unit_interval_jitter",
     "context_policy": "full",
     "freeze_parameter_updates": False,
@@ -78,7 +81,7 @@ def cell(*, seed: int, candidate_arm: str) -> dict[str, Any]:
         raise ValueError(f"unsupported candidate_arm: {candidate_arm!r}")
     reward_pg_lr = 1e-4 if candidate_arm == "active" else 0.0
     cfg_id = (
-        "gpgfix_cohort_full_candidate_distill_v2_"
+        f"gpgfix_cohort_full_candidate_distill_{EXPERIMENT_REVISION}_"
         f"{candidate_arm}_seed{seed}_n{NUM_INSTANCES}"
     )
     system_params = deepcopy(COMMON_SYSTEM_PARAMS)
@@ -91,8 +94,11 @@ def cell(*, seed: int, candidate_arm: str) -> dict[str, Any]:
     return {
         "cfg_id": cfg_id,
         "task": "cohort_studies",
-        "group": f"gpgfix_cohort_full_candidate_distill_v2_{candidate_arm}",
-        "pair_id": f"cohort_candidate_distill_seed{seed}",
+        "group": (
+            f"gpgfix_cohort_full_candidate_distill_{EXPERIMENT_REVISION}_"
+            f"{candidate_arm}"
+        ),
+        "pair_id": f"cohort_candidate_distill_{EXPERIMENT_REVISION}_seed{seed}",
         # Candidate distillation uses its own arm label.  Keep the legacy arm
         # active because both cells execute the active path and the current
         # assignment validator binds arm=frozen to freeze_parameter_updates.
@@ -125,6 +131,9 @@ def validate(configs: list[dict[str, Any]]) -> None:
     assert len(configs) == 2 * len(FORMAL_SEEDS)
     cfg_ids = [cfg["cfg_id"] for cfg in configs]
     assert len(cfg_ids) == len(set(cfg_ids)), "cfg_ids must be globally unique"
+    assert {cfg["system_params"].get("grpo_adapter_init_seed") for cfg in configs} == {
+        ADAPTER_INIT_SEED
+    }
 
     for seed in FORMAL_SEEDS:
         pair = [cfg for cfg in configs if cfg["sampling_seed"] == seed]
@@ -154,6 +163,7 @@ def validate(configs: list[dict[str, Any]]) -> None:
         assert tp == task_params()
         assert sp["ttt_lr"] == 0.0
         assert sp["lora_param_norm_clip"] == 0.0
+        assert sp["grpo_adapter_init_seed"] == ADAPTER_INIT_SEED
         assert sp["freeze_parameter_updates"] is False
         assert sp["grpo_candidate_proposer"] == "unit_interval_jitter"
         assert sp["reward_update_rule"] == "candidate_distill_instance"

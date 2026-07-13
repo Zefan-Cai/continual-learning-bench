@@ -19,6 +19,11 @@ gradient. The proposer uses independent candidate-local seeds, canonical JSON
 deduplication, complete `s12/s24/s36` triplets, and a hard attempt cap of
 `2 * (best_of_n - 1)`.
 
+For paired efficacy runs, set `grpo_adapter_init_seed` explicitly and keep it
+constant across every active/LR0 arm and proposer replicate. Adapter creation
+uses an isolated Torch RNG context, so the trainable initialization is
+bit-identical without perturbing the candidate-sampling RNG stream.
+
 For a diversity-only gate, use `ttt_lr=0`, `reward_pg_lr=0`, and
 `lora_param_norm_clip=0`. The run artifacts include before/after hashes of all
 trainable parameters so the validator can prove that this LR0 path left the

@@ -6,6 +6,9 @@ VENV=${VENV:-/mnt/localssd/ttt-rl/cl-venv}
 LOG_ROOT=${LOG_ROOT:-/mnt/localssd/ttt-rl-candidate-distill-formal/logs}
 GPU_LIST=${GPU_LIST:-0,1,2,3,4,5}
 GRID=$REPO/grid_candidate_distill_formal.json
+DECISION_FILE=formal_decision_v3_adapterseed2026071200.json
+
+"$VENV/bin/python" "$REPO/generate_candidate_distill_grids.py" --check || exit 2
 
 IFS=, read -r -a gpus <<<"$GPU_LIST"
 if [[ ${#gpus[@]} -ne 6 ]]; then
@@ -75,4 +78,4 @@ fi
 "$VENV/bin/python" "$REPO/validate_candidate_distill_pairing.py" \
   --grid "$GRID" \
   --results-root "$REPO/results/cohort_studies/live" \
-  --output "$LOG_ROOT/formal_decision.json"
+  --output "$LOG_ROOT/$DECISION_FILE"

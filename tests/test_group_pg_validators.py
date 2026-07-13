@@ -136,6 +136,7 @@ def make_candidate_distill_case() -> tuple[dict, dict]:
         {
             "reward_update_rule": "candidate_distill_instance",
             "grpo_candidate_proposer": "unit_interval_jitter",
+            "grpo_adapter_init_seed": 2026071200,
             "grpo_std_floor": 1e-4,
             "best_of_n": 4,
             "ttt_lr": 0.0,
@@ -147,6 +148,7 @@ def make_candidate_distill_case() -> tuple[dict, dict]:
     metrics["reward_update_rule"] = "candidate_distill_instance"
     metrics["grpo_objective"] = "group_normalized_candidate_distillation"
     metrics["grpo_candidate_proposer"] = "unit_interval_jitter"
+    metrics["grpo_adapter_init_seed"] = 2026071200
     hashes = [f"{value:064x}" for value in range(100, 103)]
     metrics["grpo_trainable_param_sha256_initial"] = hashes[0]
     metrics["grpo_trainable_param_sha256_current"] = hashes[-1]
@@ -226,6 +228,17 @@ def test_manifest_accepts_lr0_candidate_distillation_hash_chain() -> None:
         )
         == []
     )
+
+
+def test_manifest_rejects_adapter_init_seed_metric_drift() -> None:
+    config, manifest = make_candidate_distill_case()
+    manifest["system_update_metrics"]["grpo_adapter_init_seed"] += 1
+    errors = validate_manifest(
+        manifest,
+        strict_smoke=True,
+        expected_config=config,
+    )
+    assert_has_error(errors, "metric grpo_adapter_init_seed mismatch")
 
 
 def test_manifest_rejects_active_candidate_distillation_without_weight_change() -> None:

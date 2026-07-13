@@ -125,6 +125,7 @@ class QwenLocalSystem(ContinualLearningSystem):
         grpo_adv_clip: float = 2.0,
         grpo_std_floor: float = 1e-4,
         grpo_run_seed: int = 0,
+        grpo_adapter_init_seed: int | None = None,
         grpo_candidate_proposer: str | None = None,
         freeze_parameter_updates: bool = False,
         grpo_frozen_stream: bool = False,
@@ -216,6 +217,13 @@ class QwenLocalSystem(ContinualLearningSystem):
             raise ValueError("grpo_run_seed must be an integer")
         if grpo_run_seed < 0:
             raise ValueError("grpo_run_seed must be non-negative")
+        if grpo_adapter_init_seed is not None and (
+            isinstance(grpo_adapter_init_seed, bool)
+            or not isinstance(grpo_adapter_init_seed, int)
+        ):
+            raise ValueError("grpo_adapter_init_seed must be an integer or null")
+        if grpo_adapter_init_seed is not None and grpo_adapter_init_seed < 0:
+            raise ValueError("grpo_adapter_init_seed must be non-negative")
         if grpo_candidate_proposer is None:
             grpo_candidate_proposer = "policy_sample"
         elif not isinstance(grpo_candidate_proposer, str):
@@ -338,6 +346,7 @@ class QwenLocalSystem(ContinualLearningSystem):
         self.grpo_adv_clip = grpo_adv_clip
         self.grpo_std_floor = grpo_std_floor
         self.grpo_run_seed = grpo_run_seed
+        self.grpo_adapter_init_seed = grpo_adapter_init_seed
         self.grpo_candidate_proposer = grpo_candidate_proposer
         # ``grpo_frozen_stream`` is kept as a compatibility alias for the first
         # local D2 draft.  New configs should use the mechanism-neutral name.
@@ -684,7 +693,7 @@ class QwenLocalSystem(ContinualLearningSystem):
         # old-grid cells keep byte-identical usage/metadata output.
         if not self._uses_instance_group_pg():
             return {}
-        return {
+        metadata = {
             "parameter_updates_enabled": self.parameter_updates_enabled,
             "freeze_parameter_updates": self.freeze_parameter_updates,
             "grpo_frozen_stream": self.grpo_frozen_stream,
@@ -707,6 +716,9 @@ class QwenLocalSystem(ContinualLearningSystem):
                 self.grpo_trainable_param_sha256_current
             ),
         }
+        if self.grpo_adapter_init_seed is not None:
+            metadata["grpo_adapter_init_seed"] = self.grpo_adapter_init_seed
+        return metadata
 
     def observe(
         self, observation: Observation, next_query: Query | None = None
@@ -1103,7 +1115,7 @@ class QwenLocalSystem(ContinualLearningSystem):
                 bias="none",
                 task_type=TaskType.CAUSAL_LM,
             )
-        self._model = get_peft_model(self._model, config)
+        self._model = self._install_peft_adapter(config, get_peft_model)
         if self.peft_method == "prefix":
             # PEFT initializes the prefix RANDOMLY, which corrupts the base model's
             # generation before any training (unlike LoRA's zero-init no-op start).
@@ -1120,6 +1132,36 @@ class QwenLocalSystem(ContinualLearningSystem):
         if hasattr(self._model.config, "use_cache") and self.peft_method != "prefix":
             self._model.config.use_cache = False
         self._lora_enabled = True
+
+    def _install_peft_adapter(self, config: Any, get_peft_model: Any) -> Any:
+        """Install PEFT with an optional isolated, auditable adapter seed.
+
+        The seed is deliberately independent from ``grpo_run_seed``: formal
+        active/LR0 pairs and all proposer replicates must begin from the exact
+        same adapter, while ``grpo_run_seed`` remains free to vary candidate
+        proposals. ``fork_rng`` restores the caller's CPU and model-device RNG
+        streams after PEFT initialization.
+        """
+        if not self._uses_instance_group_pg() or self.grpo_adapter_init_seed is None:
+            return get_peft_model(self._model, config)
+
+        import torch
+
+        cuda_devices: list[int] = []
+        if torch.cuda.is_available() and self._model is not None:
+            device = next(self._model.parameters()).device
+            if device.type == "cuda":
+                cuda_devices = [
+                    torch.cuda.current_device()
+                    if device.index is None
+                    else device.index
+                ]
+        with torch.random.fork_rng(devices=cuda_devices):
+            torch.random.default_generator.manual_seed(self.grpo_adapter_init_seed)
+            for cuda_device in cuda_devices:
+                with torch.cuda.device(cuda_device):
+                    torch.cuda.manual_seed(self.grpo_adapter_init_seed)
+            return get_peft_model(self._model, config)
 
     def _train_lora_sequences(self, sequences: list[TTTBatch]) -> float:
         batches = []
@@ -1948,6 +1990,7 @@ class QwenLocalSystem(ContinualLearningSystem):
                 "candidates": [primary_answer],
                 "schema": schema,
                 "grpo_run_seed": self.grpo_run_seed,
+                "grpo_adapter_init_seed": self.grpo_adapter_init_seed,
                 "seed_instance_index": instance_index,
                 "seed_instance_id": instance_id,
                 "seed_interaction_step": seed_step,
@@ -2421,6 +2464,7 @@ class QwenLocalSystem(ContinualLearningSystem):
             key: pending.get(key)
             for key in (
                 "grpo_run_seed",
+                "grpo_adapter_init_seed",
                 "seed_instance_index",
                 "seed_instance_id",
                 "seed_interaction_step",
@@ -2823,6 +2867,7 @@ class QwenLocalSystem(ContinualLearningSystem):
             entry["candidate_proposer"] = proposer
         for key in (
             "grpo_run_seed",
+            "grpo_adapter_init_seed",
             "sampling_seed",
             "seed_instance_index",
             "seed_interaction_step",

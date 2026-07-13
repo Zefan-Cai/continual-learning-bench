@@ -526,6 +526,10 @@ class TraceRecorder:
             payload["system_update_metrics"] = {
                 key: self.system_artifacts.get(key) for key in update_keys
             }
+            if "grpo_adapter_init_seed" in self.system_artifacts:
+                payload["system_update_metrics"]["grpo_adapter_init_seed"] = (
+                    self.system_artifacts["grpo_adapter_init_seed"]
+                )
             grpo_log = self.system_artifacts.get("grpo_instance_log")
             payload["system_update_metrics"]["grpo_instance_log"] = (
                 list(grpo_log) if isinstance(grpo_log, list) else []

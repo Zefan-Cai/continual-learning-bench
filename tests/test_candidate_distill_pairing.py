@@ -49,7 +49,7 @@ def _make_manifest(config: dict, *, delta: float) -> dict:
     seed = config["sampling_seed"]
     candidate_arm = config["candidate_arm"]
     outcomes = _make_outcomes(delta if candidate_arm == "active" else 0.0)
-    initial_hash = _digest(f"initial-{seed}")
+    initial_hash = _digest(f"adapter-{grids.ADAPTER_INIT_SEED}")
     if candidate_arm == "active":
         hashes = [initial_hash] + [
             _digest(f"active-{seed}-{index}") for index in range(1, 21)
@@ -64,6 +64,7 @@ def _make_manifest(config: dict, *, delta: float) -> dict:
         log.append(
             {
                 "candidate_proposer": "unit_interval_jitter",
+                "grpo_adapter_init_seed": grids.ADAPTER_INIT_SEED,
                 "candidate_sampling": {
                     "candidate_proposer": "unit_interval_jitter",
                     "duplicates": 0,
@@ -148,6 +149,7 @@ def _make_manifest(config: dict, *, delta: float) -> dict:
             "distill_updates": 0,
             "freeze_parameter_updates": False,
             "grpo_candidate_proposer": "unit_interval_jitter",
+            "grpo_adapter_init_seed": grids.ADAPTER_INIT_SEED,
             "grpo_instance_log": log,
             "grpo_objective": "group_normalized_candidate_distillation",
             "grpo_optimizer_steps": 20,
@@ -204,6 +206,7 @@ def test_go_report_accepts_three_valid_pairs(tmp_path: Path) -> None:
         "positive_seeds": 3,
     }
     assert report["checks"]["trajectory_pairs_checked"] == 3
+    assert report["checks"]["unique_initial_trainable_hashes"] == 1
 
 
 def test_no_go_is_a_valid_zero_exit_scientific_result(tmp_path: Path) -> None:
@@ -282,5 +285,51 @@ def test_missing_manifest_and_non_bit_exact_lr0_are_invalid(tmp_path: Path) -> N
     assert any("missing result manifest" in error for error in report["errors"])
     assert any(
         "LR0 score-relevant outcomes are not bit-exact" in error
+        for error in report["errors"]
+    )
+
+
+def test_adapter_seed_metric_drift_is_invalid(tmp_path: Path) -> None:
+    grid_path, results_root = _write_case(tmp_path, [0.04, 0.05, 0.03])
+    grid = json.loads(grid_path.read_text())
+    active = next(cfg for cfg in grid if cfg["candidate_arm"] == "active")
+    path = _result_path(results_root, active)
+    manifest = json.loads(path.read_text())
+    manifest["system_update_metrics"]["grpo_adapter_init_seed"] += 1
+    path.write_text(json.dumps(manifest))
+
+    manifests, load_errors = load_manifests(grid, results_root)
+    report = evaluate(grid, manifests, load_errors=load_errors)
+
+    assert report["decision"] == "invalid"
+    assert any(
+        "metric grpo_adapter_init_seed mismatch" in error for error in report["errors"]
+    )
+
+
+def test_cross_seed_adapter_hash_drift_is_invalid(tmp_path: Path) -> None:
+    grid_path, results_root = _write_case(tmp_path, [0.04, 0.05, 0.03])
+    grid = json.loads(grid_path.read_text())
+    drift_seed = grids.FORMAL_SEEDS[-1]
+    drift_hash = _digest("different-adapter-initialization")
+    for config in [cfg for cfg in grid if cfg["sampling_seed"] == drift_seed]:
+        path = _result_path(results_root, config)
+        manifest = json.loads(path.read_text())
+        metrics = manifest["system_update_metrics"]
+        metrics["grpo_trainable_param_sha256_initial"] = drift_hash
+        metrics["grpo_instance_log"][0]["trainable_param_sha256_before"] = drift_hash
+        if config["candidate_arm"] == "lr0":
+            metrics["grpo_trainable_param_sha256_current"] = drift_hash
+            for row in metrics["grpo_instance_log"]:
+                row["trainable_param_sha256_before"] = drift_hash
+                row["trainable_param_sha256_after"] = drift_hash
+        path.write_text(json.dumps(manifest))
+
+    manifests, load_errors = load_manifests(grid, results_root)
+    report = evaluate(grid, manifests, load_errors=load_errors)
+
+    assert report["decision"] == "invalid"
+    assert any(
+        "formal cells do not share one adapter-initialization parameter hash" in error
         for error in report["errors"]
     )

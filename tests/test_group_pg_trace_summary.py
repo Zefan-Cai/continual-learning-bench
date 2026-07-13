@@ -28,6 +28,7 @@ with tempfile.TemporaryDirectory() as tmp:
         "grpo_frozen_stream": False,
         "grpo_objective": "group_normalized_policy_gradient",
         "grpo_run_seed": 20260712,
+        "grpo_adapter_init_seed": 2026071200,
         "grpo_updates": 3,
         "grpo_optimizer_steps": 3,
         "grpo_skipped_low_std": 0,
@@ -55,6 +56,7 @@ with tempfile.TemporaryDirectory() as tmp:
     assert compact["system_update_metrics"]["grpo_updates"] == 3
     assert compact["system_update_metrics"]["grpo_optimizer_steps"] == 3
     assert compact["system_update_metrics"]["grpo_run_seed"] == 20260712
+    assert compact["system_update_metrics"]["grpo_adapter_init_seed"] == 2026071200
     assert (
         compact["system_update_metrics"]["grpo_objective"]
         == "group_normalized_policy_gradient"
@@ -94,6 +96,23 @@ with tempfile.TemporaryDirectory() as tmp:
     )
     assert candidate_compact["system_update_metrics"]["grpo_candidate_proposer"] == (
         "unit_interval_jitter"
+    )
+
+    legacy_group_live = Path(tmp) / "legacy_group_run.json"
+    legacy_group = TraceRecorder(
+        system_name="qwen_local",
+        task_name="dummy",
+        system_params={"reward_update_rule": "group_pg_instance"},
+        task_params={},
+        live_trace_path=legacy_group_live,
+    )
+    legacy_group_artifacts = dict(artifacts)
+    legacy_group_artifacts.pop("grpo_adapter_init_seed")
+    legacy_group.record_system_artifacts(legacy_group_artifacts)
+    legacy_group.finalize(result)
+    assert (
+        "grpo_adapter_init_seed"
+        not in json.load(open(legacy_group_live))["system_update_metrics"]
     )
 
     old_live = Path(tmp) / "old_run.json"

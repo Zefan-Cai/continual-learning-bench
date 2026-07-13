@@ -42,6 +42,13 @@ class CLITypesTests(unittest.TestCase):
         )
         self.assertEqual(QwenLocalSystem().grpo_candidate_proposer, "policy_sample")
 
+    def test_qwen_adapter_init_seed_is_optional_and_cli_typed(self):
+        params = get_class_params(QwenLocalSystem)
+        adapter_seed = params["grpo_adapter_init_seed"]
+        self.assertIsNone(adapter_seed["default"])
+        self.assertEqual(convert_type("2026071200", adapter_seed["type"]), 2026071200)
+        self.assertIsNone(QwenLocalSystem().grpo_adapter_init_seed)
+
 
 if __name__ == "__main__":
     unittest.main()

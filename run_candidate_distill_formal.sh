@@ -34,6 +34,7 @@ arm = config.get("candidate_arm")
 expected_lr = 1e-4 if arm == "active" else 0.0 if arm == "lr0" else None
 required = {
     "reward_update_rule": "candidate_distill_instance",
+    "grpo_adapter_init_seed": 2026071200,
     "grpo_candidate_proposer": "unit_interval_jitter",
     "ttt_lr": 0.0,
     "reward_pg_lr": expected_lr,
@@ -100,6 +101,7 @@ summary = {
     "no_group": metrics["grpo_skipped_no_group"],
     "objective": metrics["grpo_objective"],
     "candidate_proposer": metrics["grpo_candidate_proposer"],
+    "adapter_init_seed": metrics["grpo_adapter_init_seed"],
     "trainable_param_sha256_initial": metrics[
         "grpo_trainable_param_sha256_initial"
     ],

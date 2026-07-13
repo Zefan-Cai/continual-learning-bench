@@ -27,6 +27,7 @@ EXPECTED_PAIRS = 3
 EXPECTED_OUTCOMES = 20
 GO_MEAN_DELTA = 0.03
 GO_MIN_DELTA = -0.03
+EXPECTED_ADAPTER_INIT_SEED = 2026071200
 
 
 def _real_outcomes(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -270,6 +271,8 @@ def validate_grid(
                 errors.append(f"{pair_id}/{arm_name}: wrong candidate proposer")
             if sp.get("grpo_run_seed") != seed:
                 errors.append(f"{pair_id}/{arm_name}: grpo_run_seed mismatch")
+            if sp.get("grpo_adapter_init_seed") != EXPECTED_ADAPTER_INIT_SEED:
+                errors.append(f"{pair_id}/{arm_name}: adapter init seed mismatch")
             if (
                 tp.get("expected_num_instances", tp.get("num_instances"))
                 != EXPECTED_OUTCOMES
@@ -337,6 +340,7 @@ def _check_first_log_pair(
     active_log, lr0_log = logs
     required = (
         "candidate_proposer",
+        "grpo_adapter_init_seed",
         "sampling_seed",
         "sampling_prompt_sha256",
         "group_size",
@@ -460,6 +464,7 @@ def evaluate(
     pair_reports: list[dict[str, Any]] = []
     raw_deltas: list[float] = []
     lr0_records: list[tuple[str, dict[str, Any]]] = []
+    initial_trainable_hashes: list[str] = []
     trajectory_pairs_checked = 0
     for seed, pair_id, active_cfg, lr0_cfg in pairs:
         active_id, lr0_id = active_cfg["cfg_id"], lr0_cfg["cfg_id"]
@@ -495,6 +500,9 @@ def evaluate(
         )
         if active_initial != lr0_initial:
             errors.append(f"{pair_id}: paired initial trainable hashes differ")
+        for initial_hash in (active_initial, lr0_initial):
+            if isinstance(initial_hash, str) and len(initial_hash) == 64:
+                initial_trainable_hashes.append(initial_hash)
         active_score, lr0_score = _valid_score(active), _valid_score(lr0)
         if active_score is not None and lr0_score is not None:
             raw_delta = active_score - lr0_score
@@ -530,6 +538,15 @@ def evaluate(
                 errors.append(
                     f"{cfg_id}: LR0 score is not bit-exact with {reference_id}"
                 )
+
+    unique_initial_hashes = len(set(initial_trainable_hashes))
+    if (
+        len(initial_trainable_hashes) == 2 * EXPECTED_PAIRS
+        and unique_initial_hashes != 1
+    ):
+        errors.append(
+            "formal cells do not share one adapter-initialization parameter hash"
+        )
 
     aggregate: dict[str, Any] | None = None
     threshold_checks: dict[str, bool] | None = None
@@ -568,6 +585,7 @@ def evaluate(
             "loaded_manifests": len(manifests),
             "lr0_bit_exact_arms": len(lr0_records),
             "trajectory_pairs_checked": trajectory_pairs_checked,
+            "unique_initial_trainable_hashes": unique_initial_hashes,
         },
         "decision": decision,
         "errors": unique_errors,

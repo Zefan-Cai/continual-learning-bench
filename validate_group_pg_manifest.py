@@ -408,6 +408,16 @@ def validate(
                 "metric grpo_run_seed mismatch: "
                 f"expected={expected_seed!r} actual={metrics.get('grpo_run_seed')!r}"
             )
+        expected_adapter_seed = expected_system_params.get("grpo_adapter_init_seed")
+        if (
+            expected_adapter_seed is not None
+            and metrics.get("grpo_adapter_init_seed") != expected_adapter_seed
+        ):
+            errors.append(
+                "metric grpo_adapter_init_seed mismatch: "
+                f"expected={expected_adapter_seed!r} "
+                f"actual={metrics.get('grpo_adapter_init_seed')!r}"
+            )
         expected_frozen = expected_system_params.get("freeze_parameter_updates")
         if metrics.get("freeze_parameter_updates") is not expected_frozen:
             errors.append(

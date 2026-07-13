@@ -29,6 +29,17 @@ def test_formal_grid_has_three_seed_matched_active_lr0_pairs() -> None:
             0.0,
             1e-4,
         }
+    assert {cfg["system_params"]["grpo_adapter_init_seed"] for cfg in configs} == {
+        grids.ADAPTER_INIT_SEED
+    }
+    assert all(grids.EXPERIMENT_REVISION in cfg["cfg_id"] for cfg in configs)
+    old_ids = {
+        "gpgfix_cohort_full_candidate_distill_v2_"
+        f"{arm}_seed{seed}_n{grids.NUM_INSTANCES}"
+        for seed in grids.FORMAL_SEEDS
+        for arm in ("active", "lr0")
+    }
+    assert old_ids.isdisjoint({cfg["cfg_id"] for cfg in configs})
 
 
 def test_formal_grid_preserves_gate_shape_except_learning_rate_and_size() -> None:
@@ -44,6 +55,8 @@ def test_formal_grid_preserves_gate_shape_except_learning_rate_and_size() -> Non
         }
         assert params["ttt_lr"] == 0.0
         assert params["lora_param_norm_clip"] == 0.0
+        assert params["grpo_adapter_init_seed"] == grids.ADAPTER_INIT_SEED
+        assert not isinstance(params["grpo_adapter_init_seed"], bool)
         assert params["freeze_parameter_updates"] is False
         assert params["grpo_candidate_proposer"] == "unit_interval_jitter"
         assert params["reward_update_rule"] == "candidate_distill_instance"
