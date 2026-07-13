@@ -2729,15 +2729,23 @@ class QwenLocalSystem(ContinualLearningSystem):
             )
             return
         self._ensure_lora_model()
+        track_candidate_weights = self.grpo_candidate_proposer == "unit_interval_jitter"
         verify_frozen_weights = (
-            self.grpo_candidate_proposer == "unit_interval_jitter"
-            and float(self.reward_pg_lr) == 0.0
+            track_candidate_weights and float(self.reward_pg_lr) == 0.0
         )
         trainable_hash_before = None
-        if verify_frozen_weights:
+        if track_candidate_weights:
             trainable_hash_before = self._trainable_param_sha256()
             if self.grpo_trainable_param_sha256_initial is None:
                 self.grpo_trainable_param_sha256_initial = trainable_hash_before
+            elif (
+                self.grpo_trainable_param_sha256_current is not None
+                and trainable_hash_before != self.grpo_trainable_param_sha256_current
+            ):
+                raise RuntimeError(
+                    "Candidate-distillation trainable parameters changed between "
+                    "audited updates"
+                )
         optimizer_steps_before = self.grpo_optimizer_steps
         self.last_grpo_loss = self._train_lora_group_objective(
             batches, lr=self.reward_pg_lr
@@ -2748,12 +2756,12 @@ class QwenLocalSystem(ContinualLearningSystem):
                 "Group-PG update must perform exactly one optimizer step; "
                 f"observed {optimizer_steps}"
             )
-        if verify_frozen_weights:
+        if track_candidate_weights:
             trainable_hash_after = self._trainable_param_sha256()
             self.grpo_trainable_param_sha256_current = trainable_hash_after
             log_entry["trainable_param_sha256_before"] = trainable_hash_before
             log_entry["trainable_param_sha256_after"] = trainable_hash_after
-            if trainable_hash_before != trainable_hash_after:
+            if verify_frozen_weights and trainable_hash_before != trainable_hash_after:
                 raise RuntimeError(
                     "LR0 candidate-distillation gate changed trainable parameters"
                 )

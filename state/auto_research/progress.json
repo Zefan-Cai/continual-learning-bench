@@ -1,8 +1,14 @@
 {
-  "active_probe": "d2_grpo_v5_cohort_stream",
-  "status": "cpu_validated",
-  "next_gate": "five_instance_gpu_smoke",
-  "baseline": "matched full-history frozen_stream with identical task and run seeds",
-  "primary_metric": "trajectory-level paired mean and median reward delta",
-  "success_threshold": 0.03
+  "active_probe": "candidate_distill_v2_formal",
+  "status": "lr0_gpu_gate_passed",
+  "next_gate": "three_seed_active_vs_lr0_paired_mini_grid",
+  "baseline": "same candidate-distillation execution path with reward_pg_lr=0",
+  "primary_metric": "seed-level paired score delta",
+  "success_threshold": {
+    "mean_delta_gte": 0.03,
+    "median_delta_gt": 0.0,
+    "min_delta_gt": -0.03,
+    "positive_seeds_gte": 2
+  },
+  "gate_artifact": "bench_artifacts/candidate_distill_v2_lr0_gate_20260712/summary.md"
 }

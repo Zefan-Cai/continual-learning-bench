@@ -456,6 +456,8 @@ def test_candidate_distillation_objective_propagates_to_metadata_and_update_log(
         return 0.125
 
     system._train_lora_group_objective = train
+    parameter_hashes = iter(("a" * 64, "b" * 64))
+    system._trainable_param_sha256 = lambda: next(parameter_hashes)
     scored = [
         (float(index), candidate)
         for index, candidate in enumerate(pending["candidates"])
@@ -465,9 +467,13 @@ def test_candidate_distillation_objective_propagates_to_metadata_and_update_log(
     metadata = system._grpo_usage_metadata()
     assert metadata["grpo_objective"] == "group_normalized_candidate_distillation"
     assert metadata["grpo_candidate_proposer"] == "unit_interval_jitter"
+    assert metadata["grpo_trainable_param_sha256_initial"] == "a" * 64
+    assert metadata["grpo_trainable_param_sha256_current"] == "b" * 64
     log = system._grpo_instance_log[-1]
     assert log["objective"] == "group_normalized_candidate_distillation"
     assert log["candidate_proposer"] == "unit_interval_jitter"
+    assert log["trainable_param_sha256_before"] == "a" * 64
+    assert log["trainable_param_sha256_after"] == "b" * 64
     assert captured_targets == [
         ("PROMPT{", record["continuation"]) for record in pending["candidate_records"]
     ]

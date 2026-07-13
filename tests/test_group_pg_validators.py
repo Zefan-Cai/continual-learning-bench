@@ -138,6 +138,8 @@ def make_candidate_distill_case() -> tuple[dict, dict]:
             "grpo_candidate_proposer": "unit_interval_jitter",
             "grpo_std_floor": 1e-4,
             "best_of_n": 4,
+            "ttt_lr": 0.0,
+            "reward_pg_lr": 1e-4,
         }
     )
     manifest = make_manifest(config)
@@ -145,11 +147,16 @@ def make_candidate_distill_case() -> tuple[dict, dict]:
     metrics["reward_update_rule"] = "candidate_distill_instance"
     metrics["grpo_objective"] = "group_normalized_candidate_distillation"
     metrics["grpo_candidate_proposer"] = "unit_interval_jitter"
+    hashes = [f"{value:064x}" for value in range(100, 103)]
+    metrics["grpo_trainable_param_sha256_initial"] = hashes[0]
+    metrics["grpo_trainable_param_sha256_current"] = hashes[-1]
     for index, row in enumerate(metrics["grpo_instance_log"]):
         row["objective"] = "group_normalized_candidate_distillation"
         row["candidate_proposer"] = "unit_interval_jitter"
         row["group_size"] = 4
         row["reward_std"] = 0.01
+        row["trainable_param_sha256_before"] = hashes[index]
+        row["trainable_param_sha256_after"] = hashes[index + 1]
         sampling = row["candidate_sampling"]
         sampling.update(
             {
@@ -167,6 +174,21 @@ def make_candidate_distill_case() -> tuple[dict, dict]:
                 },
             }
         )
+    return config, manifest
+
+
+def make_candidate_distill_lr0_case() -> tuple[dict, dict]:
+    config, manifest = make_candidate_distill_case()
+    config["cfg_id"] = "cfg-candidate-distill-lr0"
+    config["system_params"]["reward_pg_lr"] = 0.0
+    manifest["execution"]["run_group_id"] = config["cfg_id"]
+    manifest["system"]["params"]["reward_pg_lr"] = 0.0
+    frozen_hash = f"{100:064x}"
+    metrics = manifest["system_update_metrics"]
+    metrics["grpo_trainable_param_sha256_current"] = frozen_hash
+    for row in metrics["grpo_instance_log"]:
+        row["trainable_param_sha256_before"] = frozen_hash
+        row["trainable_param_sha256_after"] = frozen_hash
     return config, manifest
 
 
@@ -192,6 +214,49 @@ def test_manifest_accepts_candidate_distillation_with_honest_objective() -> None
         )
         == []
     )
+
+
+def test_manifest_accepts_lr0_candidate_distillation_hash_chain() -> None:
+    config, manifest = make_candidate_distill_lr0_case()
+    assert (
+        validate_manifest(
+            manifest,
+            strict_smoke=True,
+            expected_config=config,
+        )
+        == []
+    )
+
+
+def test_manifest_rejects_active_candidate_distillation_without_weight_change() -> None:
+    config, manifest = make_candidate_distill_case()
+    initial = manifest["system_update_metrics"]["grpo_trainable_param_sha256_initial"]
+    manifest["system_update_metrics"]["grpo_trainable_param_sha256_current"] = initial
+    manifest["system_update_metrics"]["grpo_instance_log"][-1][
+        "trainable_param_sha256_after"
+    ] = initial
+    errors = validate_manifest(
+        manifest,
+        strict_smoke=True,
+        expected_config=config,
+    )
+    assert_has_error(
+        errors,
+        "active candidate-distillation left trainable parameters unchanged",
+    )
+
+
+def test_manifest_rejects_discontinuous_candidate_distillation_hash_chain() -> None:
+    config, manifest = make_candidate_distill_case()
+    manifest["system_update_metrics"]["grpo_instance_log"][1][
+        "trainable_param_sha256_before"
+    ] = f"{999:064x}"
+    errors = validate_manifest(
+        manifest,
+        strict_smoke=True,
+        expected_config=config,
+    )
+    assert_has_error(errors, "parameter hash chain is discontinuous")
 
 
 def test_manifest_rejects_candidate_distillation_mislabeled_as_policy_gradient() -> (

@@ -306,20 +306,24 @@ def validate(
         "unit_interval_jitter"
     ):
         errors.append("candidate distillation requires unit_interval_jitter proposer")
+    candidate_weight_audit = reward_update_rule == "candidate_distill_instance"
     frozen_weight_probe = (
-        reward_update_rule == "candidate_distill_instance"
-        and sp.get("ttt_lr") == 0
-        and sp.get("reward_pg_lr") == 0
+        candidate_weight_audit and sp.get("ttt_lr") == 0 and sp.get("reward_pg_lr") == 0
     )
-    if frozen_weight_probe:
-        initial_hash = metrics.get("grpo_trainable_param_sha256_initial")
-        current_hash = metrics.get("grpo_trainable_param_sha256_current")
+    initial_hash = metrics.get("grpo_trainable_param_sha256_initial")
+    current_hash = metrics.get("grpo_trainable_param_sha256_current")
+    if candidate_weight_audit:
         if (
             not isinstance(initial_hash, str)
             or len(initial_hash) != 64
-            or current_hash != initial_hash
+            or not isinstance(current_hash, str)
+            or len(current_hash) != 64
         ):
-            errors.append("LR0 trainable parameter hashes are missing or changed")
+            errors.append(
+                "candidate-distillation trainable parameter hashes are missing"
+            )
+        elif frozen_weight_probe and current_hash != initial_hash:
+            errors.append("LR0 trainable parameter hashes changed")
     if not integer(sp.get("grpo_run_seed")):
         errors.append("missing explicit grpo_run_seed")
     if not integer(expected, minimum=1) or len(outcomes) != expected:
@@ -429,6 +433,7 @@ def validate(
                 errors.append("active update/skip accounting mismatch")
             if optimizer_steps != updates:
                 errors.append("optimizer_steps must equal successful group updates")
+        candidate_hash_cursor = initial_hash if candidate_weight_audit else None
         for index, row in enumerate(log):
             if not isinstance(row, dict):
                 errors.append(f"log[{index}] is not an object")
@@ -469,17 +474,52 @@ def validate(
                 )
                 if not integer(retained, minimum=1):
                     errors.append(f"log[{index}] retained no prompt tokens")
-                if frozen_weight_probe:
+                if candidate_weight_audit:
                     before_hash = row.get("trainable_param_sha256_before")
                     after_hash = row.get("trainable_param_sha256_after")
                     if (
                         not isinstance(before_hash, str)
                         or len(before_hash) != 64
-                        or after_hash != before_hash
+                        or not isinstance(after_hash, str)
+                        or len(after_hash) != 64
                     ):
                         errors.append(
-                            f"log[{index}] LR0 trainable parameter hash changed"
+                            f"log[{index}] candidate-distillation parameter hashes "
+                            "are missing"
                         )
+                    else:
+                        if (
+                            isinstance(candidate_hash_cursor, str)
+                            and before_hash != candidate_hash_cursor
+                        ):
+                            errors.append(
+                                f"log[{index}] candidate-distillation parameter "
+                                "hash chain is discontinuous"
+                            )
+                        if frozen_weight_probe and after_hash != before_hash:
+                            errors.append(
+                                f"log[{index}] LR0 trainable parameter hash changed"
+                            )
+                        candidate_hash_cursor = after_hash
+        if candidate_weight_audit:
+            if (
+                isinstance(candidate_hash_cursor, str)
+                and isinstance(current_hash, str)
+                and candidate_hash_cursor != current_hash
+            ):
+                errors.append(
+                    "candidate-distillation final parameter hash does not match log"
+                )
+            if (
+                not frozen_weight_probe
+                and integer(updates, minimum=1)
+                and isinstance(initial_hash, str)
+                and isinstance(current_hash, str)
+                and current_hash == initial_hash
+            ):
+                errors.append(
+                    "active candidate-distillation left trainable parameters unchanged"
+                )
         if strict_smoke:
             if updates != expected:
                 errors.append("smoke requires one successful update per instance")
