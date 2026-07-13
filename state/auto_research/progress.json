@@ -1,7 +1,7 @@
 {
-  "active_probe": "candidate_distill_v2_formal",
-  "status": "lr0_gpu_gate_passed",
-  "next_gate": "three_seed_active_vs_lr0_paired_mini_grid",
+  "active_probe": "candidate_distill_v3_adapterseed2026071200_formal",
+  "status": "formal_running_after_adapter_hash_preflight",
+  "next_gate": "preregistered_three_seed_paired_decision",
   "baseline": "same candidate-distillation execution path with reward_pg_lr=0",
   "primary_metric": "seed-level paired score delta",
   "success_threshold": {
@@ -10,5 +10,9 @@
     "min_delta_gt": -0.03,
     "positive_seeds_gte": 2
   },
-  "gate_artifact": "bench_artifacts/candidate_distill_v2_lr0_gate_20260712/summary.md"
+  "gate_artifact": "bench_artifacts/candidate_distill_v2_lr0_gate_20260712/summary.md",
+  "formal_artifact": "bench_artifacts/candidate_distill_v3_formal_20260713/summary.md",
+  "formal_commit": "b74bc81f0c4d326f149d5b4d5409b1aa5f9521c0",
+  "adapter_init_seed": 2026071200,
+  "adapter_preflight_sha256": "4e904ce3813b2c0ec0bbd13fcd838b1d6704ef801b1db20d1d4259a84e7e1d7f"
 }
