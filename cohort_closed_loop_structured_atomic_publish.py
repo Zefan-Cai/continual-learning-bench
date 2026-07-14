@@ -54,12 +54,27 @@ class PublishedArtifactObservation:
     path: str
     relative_path: str
     publication_intent_path: str
+    directory_chain: tuple[tuple[int, int], ...]
     size_bytes: int
     sha256: str
     device: int
     inode: int
     mode: int
     link_count: int
+    uid: int
+    gid: int
+    mtime_ns: int
+    ctime_ns: int
+    publication_intent_size_bytes: int
+    publication_intent_sha256: str
+    publication_intent_device: int
+    publication_intent_inode: int
+    publication_intent_mode: int
+    publication_intent_link_count: int
+    publication_intent_uid: int
+    publication_intent_gid: int
+    publication_intent_mtime_ns: int
+    publication_intent_ctime_ns: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -486,12 +501,27 @@ def read_and_validate_readonly_artifact(
         path=(root / relative_path).as_posix(),
         relative_path=relative_path,
         publication_intent_path=intent_path.as_posix(),
+        directory_chain=second.directory_chain,
         size_bytes=len(second.payload),
         sha256=hashlib.sha256(second.payload).hexdigest(),
         device=second.metadata.st_dev,
         inode=second.metadata.st_ino,
         mode=stat.S_IMODE(second.metadata.st_mode),
         link_count=second.metadata.st_nlink,
+        uid=second.metadata.st_uid,
+        gid=second.metadata.st_gid,
+        mtime_ns=second.metadata.st_mtime_ns,
+        ctime_ns=second.metadata.st_ctime_ns,
+        publication_intent_size_bytes=len(second.intent_raw),
+        publication_intent_sha256=hashlib.sha256(second.intent_raw).hexdigest(),
+        publication_intent_device=second.intent_metadata.st_dev,
+        publication_intent_inode=second.intent_metadata.st_ino,
+        publication_intent_mode=stat.S_IMODE(second.intent_metadata.st_mode),
+        publication_intent_link_count=second.intent_metadata.st_nlink,
+        publication_intent_uid=second.intent_metadata.st_uid,
+        publication_intent_gid=second.intent_metadata.st_gid,
+        publication_intent_mtime_ns=second.intent_metadata.st_mtime_ns,
+        publication_intent_ctime_ns=second.intent_metadata.st_ctime_ns,
     )
     return second.payload, observation
 
