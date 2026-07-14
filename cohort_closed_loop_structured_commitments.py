@@ -224,7 +224,7 @@ _PRECOMMIT_UNSIGNED_KEYS = frozenset(
 _PRECOMMIT_KEYS = _PRECOMMIT_UNSIGNED_KEYS | {"precommit_sha256"}
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SharedJoinKey:
     """The sole cross-branch join identity registered by the preregistration."""
 
@@ -240,7 +240,7 @@ class SharedJoinKey:
     scoring_context_attestation_sha256: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class InvocationCommitment:
     """Public identity of exactly one precommitted scorer invocation."""
 
@@ -249,28 +249,49 @@ class InvocationCommitment:
     action_role: str
     action_id: str
     semantic_action_sha256: str
+    action_bytes: bytes
     action_bytes_sha256: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
+class ValidatedBranchRecord:
+    """Immutable, recomputed public view of one validated branch record."""
+
+    branch_id: str
+    state_before: tuple[float, ...] | None
+    state_before_sha256: str | None
+    official_invocation_ref: tuple[str, str, str]
+    candidate_invocation_refs: tuple[tuple[str, str, str], ...]
+    probe_states: tuple[tuple[float, ...], ...]
+    probe_state_sha256s: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class ValidatedPrecommit:
-    """Minimal public view; opaque-handle bytes are intentionally not exposed."""
+    """Immutable public view; opaque-handle bytes are intentionally not exposed."""
 
     precommit_sha256: str
     commitment_family: str
     commitment_phase: str
+    inventory_sha256: tuple[tuple[str, str], ...]
     block_id: str
     item_id: int
+    instance_id: str
     instance_index: int
+    query_sha256: str
+    raw_trace_sha256: str
     previous_item_precommit_sha256: str
     shared_join_key: SharedJoinKey
+    shared_raw_action_bytes: bytes
+    shared_raw_action_object_sha256: str
     opaque_handle_sha256: str
     scoring_context_sha256: str
     scoring_context_attestation_sha256: str
+    branch_records: tuple[ValidatedBranchRecord, ...]
     invocations: tuple[InvocationCommitment, ...]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ValidatedReceiptRequest:
     """A scalar-only receipt request after its one canonical float decode."""
 
@@ -288,7 +309,7 @@ class ValidatedReceiptRequest:
     scalar_reward: float
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PublishedArtifact:
     """Verified identity of a no-overwrite publication."""
 
@@ -297,14 +318,6 @@ class PublishedArtifact:
     sha256: str
     device: int
     inode: int
-
-
-@dataclass(frozen=True)
-class _ValidatedBranchRecord:
-    branch_id: str
-    invocation_refs: tuple[tuple[str, str, str], ...]
-    state_before: tuple[float, ...] | None
-    probe_states: tuple[tuple[float, ...], ...]
 
 
 def canonical_json_bytes(value: object) -> bytes:
@@ -579,10 +592,15 @@ def _join_object(join: SharedJoinKey) -> dict[str, object]:
     }
 
 
-def _validate_inventory(value: object) -> None:
+def _validate_inventory(value: object) -> tuple[tuple[str, str], ...]:
     obj = _require_exact_keys(value, _INVENTORY_KEYS, "inventory_sha256")
-    for key in _INVENTORY_KEYS:
-        _require_sha256(obj[key], f"inventory_sha256.{key}")
+    return tuple(
+        (
+            key,
+            _require_sha256(obj[key], f"inventory_sha256.{key}"),
+        )
+        for key in sorted(_INVENTORY_KEYS)
+    )
 
 
 def _validate_numerical_runtime(value: object) -> None:
@@ -650,8 +668,9 @@ def _validate_invocation(
         item_id=item_id,
         action_role=ref[1],
         action_id=ref[2],
-        semantic_action_sha256=semantic_digest,
-        action_bytes_sha256=str(obj["action_bytes_sha256"]),
+        semantic_action_sha256=recomputed_semantic,
+        action_bytes=action_bytes,
+        action_bytes_sha256=hashlib.sha256(action_bytes).hexdigest(),
     )
     return commitment, ref, action_bytes
 
@@ -661,7 +680,7 @@ def _validate_branch_record(
     *,
     shared_raw_object_sha256: str,
     label: str,
-) -> _ValidatedBranchRecord:
+) -> ValidatedBranchRecord:
     obj = _require_exact_keys(value, _BRANCH_KEYS, label)
     branch_id = obj["branch_id"]
     if type(branch_id) is not str or branch_id not in REGISTERED_BRANCH_IDS:
@@ -696,7 +715,9 @@ def _validate_branch_record(
     state_digest_value = obj["state_before_sha256"]
     probe_values = obj["probe_states"]
     state: tuple[float, ...] | None = None
+    state_digest: str | None = None
     recorded_probe_states: list[tuple[float, ...]] = []
+    recorded_probe_state_digests: list[str] = []
     if type(probe_values) is not list:
         raise StructuredCommitmentError(f"{label}.probe_states must be a list")
     if state_value is None or state_digest_value is None:
@@ -718,6 +739,7 @@ def _validate_branch_record(
             != expected_state_digest
         ):
             raise StructuredCommitmentError(f"{label} state digest mismatch")
+        state_digest = expected_state_digest
         if candidate_refs:
             expected_probes = candidate_probe_states(state)
             if len(probe_values) != len(expected_probes):
@@ -751,13 +773,17 @@ def _validate_branch_record(
                     != expected_digest
                 ):
                     raise StructuredCommitmentError(f"{label} probe digest mismatch")
+                recorded_probe_state_digests.append(expected_digest)
         elif probe_values:
             raise StructuredCommitmentError(f"{label} has probes without candidates")
-    return _ValidatedBranchRecord(
+    return ValidatedBranchRecord(
         branch_id=branch_id,
-        invocation_refs=tuple([official_ref, *candidate_refs]),
         state_before=state,
+        state_before_sha256=state_digest,
+        official_invocation_ref=official_ref,
+        candidate_invocation_refs=tuple(candidate_refs),
         probe_states=tuple(recorded_probe_states),
+        probe_state_sha256s=tuple(recorded_probe_state_digests),
     )
 
 
@@ -779,7 +805,7 @@ def _validate_precommit_object(
     commitment_phase = payload["commitment_phase"]
     if commitment_phase not in ("adaptation", "held_out"):
         raise StructuredCommitmentError("precommit commitment_phase is not registered")
-    _validate_inventory(payload["inventory_sha256"])
+    inventory_sha256 = _validate_inventory(payload["inventory_sha256"])
 
     block_id = _require_safe_id(payload["block_id"], "precommit.block_id")
     item_id = _require_positive_int(payload["item_id"], "precommit.item_id")
@@ -838,8 +864,10 @@ def _validate_precommit_object(
         raw_obj["shared_raw_action_object_sha256"],
         "shared_raw_action.shared_raw_action_object_sha256",
     )
-    if raw_object_digest != canonical_sha256(raw_unsigned):
+    recomputed_raw_object_digest = canonical_sha256(raw_unsigned)
+    if raw_object_digest != recomputed_raw_object_digest:
         raise StructuredCommitmentError("shared raw action object digest mismatch")
+    raw_object_digest = recomputed_raw_object_digest
 
     context = _require_exact_keys(
         payload["scoring_context"], _SCORING_CONTEXT_KEYS, "scoring_context"
@@ -879,7 +907,7 @@ def _validate_precommit_object(
         raise StructuredCommitmentError("branch_records must be a nonempty list")
     branch_ids: list[str] = []
     expected_refs: list[tuple[str, str, str]] = []
-    validated_branches: list[_ValidatedBranchRecord] = []
+    validated_branches: list[ValidatedBranchRecord] = []
     for index, branch_value in enumerate(branch_values):
         branch = _validate_branch_record(
             branch_value,
@@ -887,7 +915,10 @@ def _validate_precommit_object(
             label=f"branch_records[{index}]",
         )
         branch_id = branch.branch_id
-        refs = branch.invocation_refs
+        refs = (
+            branch.official_invocation_ref,
+            *branch.candidate_invocation_refs,
+        )
         if branch_id in branch_ids:
             raise StructuredCommitmentError("duplicate branch record")
         candidate_count = len(refs) - 1
@@ -1001,7 +1032,7 @@ def _validate_precommit_object(
                 f"{branch.branch_id} official action bytes differ from T_x"
             )
 
-        candidate_refs = branch.invocation_refs[1:]
+        candidate_refs = branch.candidate_invocation_refs
         if len(candidate_refs) != len(branch.probe_states):
             raise StructuredCommitmentError(
                 f"{branch.branch_id} candidate/probe inventory mismatch"
@@ -1024,7 +1055,13 @@ def _validate_precommit_object(
         and item_id == 1
     ):
         first_item_vectors = [
-            tuple(action_bytes_by_ref[ref] for ref in branch.invocation_refs)
+            tuple(
+                action_bytes_by_ref[ref]
+                for ref in (
+                    branch.official_invocation_ref,
+                    *branch.candidate_invocation_refs,
+                )
+            )
             for branch in validated_branches
         ]
         if any(vector[0] != raw_action for vector in first_item_vectors):
@@ -1050,14 +1087,21 @@ def _validate_precommit_object(
         precommit_sha256=precommit_sha256,
         commitment_family=str(commitment_family),
         commitment_phase=str(commitment_phase),
+        inventory_sha256=inventory_sha256,
         block_id=block_id,
         item_id=item_id,
+        instance_id=instance_id,
         instance_index=instance_index,
+        query_sha256=query_sha256,
+        raw_trace_sha256=raw_trace_sha256,
         previous_item_precommit_sha256=previous_item_precommit_sha256,
         shared_join_key=join,
+        shared_raw_action_bytes=raw_action,
+        shared_raw_action_object_sha256=raw_object_digest,
         opaque_handle_sha256=opaque_handle_sha256,
         scoring_context_sha256=scoring_context_sha256,
         scoring_context_attestation_sha256=attestation_sha256,
+        branch_records=tuple(validated_branches),
         invocations=tuple(invocations),
     )
 
@@ -1812,6 +1856,7 @@ __all__ = [
     "CANDIDATE_ACTION_IDS",
     "FLOAT_HEX_CODEC_ID",
     "GENESIS_PRECOMMIT_SHA256",
+    "InvocationCommitment",
     "PRECOMMIT_PROTOCOL",
     "PublishedArtifact",
     "REGISTERED_BRANCH_IDS",
@@ -1820,6 +1865,7 @@ __all__ = [
     "SHARED_RAW_ACTION_PROTOCOL",
     "SharedJoinKey",
     "StructuredCommitmentError",
+    "ValidatedBranchRecord",
     "ValidatedPrecommit",
     "ValidatedReceiptRequest",
     "atomic_publish_no_overwrite",

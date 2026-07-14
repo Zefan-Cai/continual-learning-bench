@@ -9,6 +9,7 @@ import json
 import math
 import os
 import stat
+from dataclasses import FrozenInstanceError, fields
 from pathlib import Path
 
 import pytest
@@ -431,6 +432,167 @@ def test_precommit_and_official_receipt_happy_path_is_opaque() -> None:
         == unsigned["scoring_context"]["opaque_handle_sha256"]
     )
     assert "ground_truth" not in repr(validated)
+
+
+def test_validated_precommit_public_view_is_exact_fixed_and_outcome_blind() -> None:
+    unsigned, precommit_bytes, _ = _fixture()
+    validated = validate_precommit_bytes(precommit_bytes)
+    precommit = json.loads(precommit_bytes)
+
+    assert validated.inventory_sha256 == tuple(
+        sorted(unsigned["inventory_sha256"].items())
+    )
+    assert validated.instance_id == unsigned["instance_id"]
+    assert validated.query_sha256 == unsigned["query_sha256"]
+    assert validated.raw_trace_sha256 == unsigned["raw_trace_sha256"]
+    assert validated.shared_raw_action_bytes == _raw_action()
+    assert (
+        validated.shared_raw_action_object_sha256
+        == precommit["shared_raw_action"]["shared_raw_action_object_sha256"]
+        == canonical_sha256(
+            {
+                key: value
+                for key, value in precommit["shared_raw_action"].items()
+                if key != "shared_raw_action_object_sha256"
+            }
+        )
+    )
+    assert isinstance(validated.inventory_sha256, tuple)
+    assert isinstance(validated.branch_records, tuple)
+    assert "opaque_handle_bytes" not in {
+        field.name for field in fields(type(validated))
+    }
+    assert b"ground_truth" not in validated.shared_raw_action_bytes
+    assert "ground_truth" not in repr(validated)
+
+
+def test_validated_branch_view_has_exact_recomputed_state_refs_and_hashes() -> None:
+    _, precommit_bytes, _ = _fixture()
+    validated = validate_precommit_bytes(precommit_bytes)
+    expected_probe_states = tuple(
+        probe_state for _, probe_state in candidate_probe_states(POSITIVE_ZERO_STATE)
+    )
+    expected_candidate_refs = tuple(
+        ("closed_loop_active", "candidate", action_id)
+        for action_id in CANDIDATE_ACTION_IDS
+    )
+
+    active = validated.branch_records[0]
+    assert isinstance(active, commitments.ValidatedBranchRecord)
+    assert active.branch_id == "closed_loop_active"
+    assert active.state_before == POSITIVE_ZERO_STATE
+    assert active.state_before_sha256 == state_sha256(POSITIVE_ZERO_STATE)
+    assert active.official_invocation_ref == (
+        "closed_loop_active",
+        "official",
+        "official",
+    )
+    assert active.candidate_invocation_refs == expected_candidate_refs
+    assert active.probe_states == expected_probe_states
+    assert active.probe_state_sha256s == tuple(
+        state_sha256(state) for state in expected_probe_states
+    )
+    assert isinstance(active.candidate_invocation_refs, tuple)
+    assert isinstance(active.probe_states, tuple)
+    assert isinstance(active.probe_state_sha256s, tuple)
+
+
+def test_validated_invocations_have_exact_recomputed_action_bytes_and_hashes() -> None:
+    unsigned, precommit_bytes, _ = _fixture()
+    validated = validate_precommit_bytes(precommit_bytes)
+    expected_by_ref = {
+        (
+            invocation["branch_id"],
+            invocation["action_role"],
+            invocation["action_id"],
+        ): base64.b64decode(invocation["action_bytes_base64"])
+        for invocation in unsigned["invocations"]
+    }
+
+    for invocation in validated.invocations:
+        ref = (
+            invocation.branch_id,
+            invocation.action_role,
+            invocation.action_id,
+        )
+        expected_action = expected_by_ref[ref]
+        assert invocation.action_bytes == expected_action
+        assert isinstance(invocation.action_bytes, bytes)
+        assert (
+            invocation.action_bytes_sha256
+            == hashlib.sha256(expected_action).hexdigest()
+        )
+        assert invocation.semantic_action_sha256 == semantic_action_sha256(
+            expected_action
+        )
+
+
+def test_validated_public_view_nested_values_are_immutable() -> None:
+    unsigned, precommit_bytes, _ = _fixture()
+    validated = validate_precommit_bytes(precommit_bytes)
+    receipt_view = validate_receipt_request_bytes(
+        canonical_json_bytes(_request(unsigned, precommit_bytes))
+    )
+    published_view = commitments.PublishedArtifact(
+        path=Path("/tmp/immutable-boundary-test"),
+        size=1,
+        sha256="f" * 64,
+        device=1,
+        inode=1,
+    )
+
+    with pytest.raises(FrozenInstanceError):
+        validated.instance_id = "mutated"  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        validated.branch_records[0].branch_id = "mutated"  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        validated.invocations[0].action_bytes = b"mutated"  # type: ignore[misc]
+    with pytest.raises(TypeError):
+        validated.inventory_sha256[0] = ("mutated", "f" * 64)  # type: ignore[index]
+    with pytest.raises(TypeError):
+        validated.branch_records[0].probe_states[0][0] = 1.0  # type: ignore[index]
+    with pytest.raises(TypeError):
+        validated.shared_raw_action_bytes[0] = 0  # type: ignore[index]
+
+    boundary_objects = (
+        validated,
+        validated.shared_join_key,
+        validated.branch_records[0],
+        validated.invocations[0],
+        receipt_view,
+        published_view,
+    )
+    for boundary in boundary_objects:
+        assert not hasattr(boundary, "__dict__")
+        with pytest.raises(AttributeError):
+            object.__getattribute__(boundary, "__dict__")
+
+
+def test_canonical_online_icl_validated_branch_has_exact_null_state_view() -> None:
+    _, precommit_bytes, _ = _fixture(family="canonical_online_icl")
+    validated = validate_precommit_bytes(precommit_bytes)
+
+    assert len(validated.branch_records) == 1
+    branch = validated.branch_records[0]
+    assert branch.branch_id == "canonical_online_icl"
+    assert branch.state_before is None
+    assert branch.state_before_sha256 is None
+    assert branch.official_invocation_ref == (
+        "canonical_online_icl",
+        "official",
+        "official",
+    )
+    assert branch.candidate_invocation_refs == ()
+    assert branch.probe_states == ()
+    assert branch.probe_state_sha256s == ()
+    assert validated.invocations[0].action_bytes == validated.shared_raw_action_bytes
+
+
+def test_public_exports_do_not_restore_deleted_stage_sequence_alias() -> None:
+    assert "InvocationCommitment" in commitments.__all__
+    assert "ValidatedBranchRecord" in commitments.__all__
+    assert "validate_precommit_stage_sequence" not in commitments.__all__
+    assert not hasattr(commitments, "validate_precommit_stage_sequence")
 
 
 def test_candidate_receipt_identifies_one_registered_invocation() -> None:
