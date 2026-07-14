@@ -1,0 +1,374 @@
+[
+  {
+    "cohort_id": "voc_3_6",
+    "label": "VOC 3-6 mg/L",
+    "layer": 1,
+    "criteria": "3 <= voc_mg_l < 6",
+    "variables_required": [
+      "voc_mg_l"
+    ]
+  },
+  {
+    "cohort_id": "acron_lt2",
+    "label": "Acron use < 2",
+    "layer": 1,
+    "criteria": "acron_use_avg < 2",
+    "variables_required": [
+      "acron_use_avg"
+    ]
+  },
+  {
+    "cohort_id": "family_history_yes",
+    "label": "Family history positive",
+    "layer": 1,
+    "criteria": "family_history = yes",
+    "variables_required": [
+      "family_history"
+    ]
+  },
+  {
+    "cohort_id": "hhbp_gte8",
+    "label": "HHBP >= 8",
+    "layer": 1,
+    "criteria": "hhbp_serum_level >= 8",
+    "variables_required": [
+      "hhbp_serum_level"
+    ]
+  },
+  {
+    "cohort_id": "avoc_high_prb1_lt25",
+    "label": "High ambient VOC, low PRB1",
+    "layer": 2,
+    "criteria": "ambient_voc_ppb >= 15 AND prb1_ratio < 25",
+    "variables_required": [
+      "ambient_voc_ppb",
+      "prb1_ratio"
+    ]
+  },
+  {
+    "cohort_id": "avoc_high_education_gte16",
+    "label": "High ambient VOC, well-educated",
+    "layer": 2,
+    "criteria": "ambient_voc_ppb >= 15 AND years_of_education >= 16",
+    "variables_required": [
+      "ambient_voc_ppb",
+      "years_of_education"
+    ]
+  },
+  {
+    "cohort_id": "avoc_gte15_gg1",
+    "label": "High ambient VOC, genotype GG-1",
+    "layer": 2,
+    "criteria": "ambient_voc_ppb >= 15 AND genotype_group = GG-1",
+    "variables_required": [
+      "ambient_voc_ppb",
+      "genotype_group"
+    ]
+  },
+  {
+    "cohort_id": "family_history_gg3",
+    "label": "Family history, genotype GG-3",
+    "layer": 2,
+    "criteria": "family_history = yes AND genotype_group = GG-3",
+    "variables_required": [
+      "family_history",
+      "genotype_group"
+    ]
+  },
+  {
+    "cohort_id": "family_history_prb1_gte28",
+    "label": "Family history, PRB1 28+",
+    "layer": 2,
+    "criteria": "family_history = yes AND prb1_ratio >= 28",
+    "variables_required": [
+      "family_history",
+      "prb1_ratio"
+    ]
+  },
+  {
+    "cohort_id": "education_gte16_cognitive_lt050",
+    "label": "Educated, cognitively impaired",
+    "layer": 2,
+    "criteria": "years_of_education >= 16 AND cognitive_score (low: MMSE < 23 | MoCA < 20 | AD8 > 4)",
+    "variables_required": [
+      "years_of_education",
+      "cognitive_score"
+    ]
+  },
+  {
+    "cohort_id": "education_gte16_gg3",
+    "label": "Educated, genotype GG-3",
+    "layer": 2,
+    "criteria": "years_of_education >= 16 AND genotype_group = GG-3",
+    "variables_required": [
+      "years_of_education",
+      "genotype_group"
+    ]
+  },
+  {
+    "cohort_id": "education_lt13_gg1",
+    "label": "Low education, genotype GG-1",
+    "layer": 2,
+    "criteria": "years_of_education < 13 AND genotype_group = GG-1",
+    "variables_required": [
+      "years_of_education",
+      "genotype_group"
+    ]
+  },
+  {
+    "cohort_id": "acron_lt2_prb1_24_28",
+    "label": "Low Acron, borderline PRB1",
+    "layer": 2,
+    "criteria": "acron_use_avg < 2 AND 24 <= prb1_ratio < 28",
+    "variables_required": [
+      "acron_use_avg",
+      "prb1_ratio"
+    ]
+  },
+  {
+    "cohort_id": "prb1_gte28_acron_gte4",
+    "label": "High PRB1, high Acron",
+    "layer": 2,
+    "criteria": "prb1_ratio >= 28 AND acron_use_avg >= 4",
+    "variables_required": [
+      "prb1_ratio",
+      "acron_use_avg"
+    ]
+  },
+  {
+    "cohort_id": "voc_3_6_prb1_lt25",
+    "label": "Moderate VOC, low PRB1",
+    "layer": 2,
+    "criteria": "3 <= voc_mg_l < 6 AND prb1_ratio < 25",
+    "variables_required": [
+      "voc_mg_l",
+      "prb1_ratio"
+    ]
+  },
+  {
+    "cohort_id": "gg3_voc_lt3",
+    "label": "Genotype GG-3, low VOC",
+    "layer": 2,
+    "criteria": "genotype_group = GG-3 AND voc_mg_l < 3",
+    "variables_required": [
+      "genotype_group",
+      "voc_mg_l"
+    ]
+  },
+  {
+    "cohort_id": "age_gte55_acron_gte4",
+    "label": "Older, high Acron",
+    "layer": 2,
+    "criteria": "age >= 55 AND acron_use_avg >= 4",
+    "variables_required": [
+      "age",
+      "acron_use_avg"
+    ]
+  },
+  {
+    "cohort_id": "cognitive_lt050_age_lt55",
+    "label": "Cognitively impaired, younger",
+    "layer": 2,
+    "criteria": "cognitive_score (low: MMSE < 23 | MoCA < 20 | AD8 > 4) AND age < 55",
+    "variables_required": [
+      "cognitive_score",
+      "age"
+    ]
+  },
+  {
+    "cohort_id": "hhbp_gte8_prb1_lt25",
+    "label": "High HHBP, low PRB1",
+    "layer": 2,
+    "criteria": "hhbp_serum_level >= 8 AND prb1_ratio < 25",
+    "variables_required": [
+      "hhbp_serum_level",
+      "prb1_ratio"
+    ]
+  },
+  {
+    "cohort_id": "age_40_60_voc_gte5",
+    "label": "Middle-aged, high VOC",
+    "layer": 2,
+    "criteria": "40 <= age < 60 AND voc_mg_l >= 5",
+    "variables_required": [
+      "age",
+      "voc_mg_l"
+    ]
+  },
+  {
+    "cohort_id": "avoc_high_family_history_prb1_gte28",
+    "label": "High ambient VOC, family hx, PRB1 28+",
+    "layer": 3,
+    "criteria": "ambient_voc_ppb >= 15 AND family_history = yes AND prb1_ratio >= 28",
+    "variables_required": [
+      "ambient_voc_ppb",
+      "family_history",
+      "prb1_ratio"
+    ]
+  },
+  {
+    "cohort_id": "education_high_voc_high_acron_low",
+    "label": "Educated, high VOC, low Acron",
+    "layer": 3,
+    "criteria": "years_of_education >= 16 AND voc_mg_l >= 5 AND acron_use_avg < 2",
+    "variables_required": [
+      "years_of_education",
+      "voc_mg_l",
+      "acron_use_avg"
+    ]
+  },
+  {
+    "cohort_id": "family_history_gg3_voc_gte5",
+    "label": "Family hx, GG-3, high VOC",
+    "layer": 3,
+    "criteria": "family_history = yes AND genotype_group = GG-3 AND voc_mg_l >= 5",
+    "variables_required": [
+      "family_history",
+      "genotype_group",
+      "voc_mg_l"
+    ]
+  },
+  {
+    "cohort_id": "avoc_high_cognitive_low_family_history",
+    "label": "High ambient VOC, impaired cognition, family hx",
+    "layer": 3,
+    "criteria": "ambient_voc_ppb >= 15 AND cognitive_score (low: MMSE < 23 | MoCA < 20 | AD8 > 4) AND family_history = yes",
+    "variables_required": [
+      "ambient_voc_ppb",
+      "cognitive_score",
+      "family_history"
+    ]
+  },
+  {
+    "cohort_id": "education_low_prb1_gte28_gg3",
+    "label": "Low education, high PRB1, GG-3",
+    "layer": 3,
+    "criteria": "years_of_education < 13 AND prb1_ratio >= 28 AND genotype_group = GG-3",
+    "variables_required": [
+      "years_of_education",
+      "prb1_ratio",
+      "genotype_group"
+    ]
+  },
+  {
+    "cohort_id": "acron_high_hhbp_high_prb1_lt25",
+    "label": "High Acron, high HHBP, low PRB1",
+    "layer": 3,
+    "criteria": "acron_use_avg >= 4 AND hhbp_serum_level >= 8 AND prb1_ratio < 25",
+    "variables_required": [
+      "acron_use_avg",
+      "hhbp_serum_level",
+      "prb1_ratio"
+    ]
+  },
+  {
+    "cohort_id": "family_history_education_gte16_prb1_lt25",
+    "label": "Family hx, educated, low PRB1",
+    "layer": 3,
+    "criteria": "family_history = yes AND years_of_education >= 16 AND prb1_ratio < 25",
+    "variables_required": [
+      "family_history",
+      "years_of_education",
+      "prb1_ratio"
+    ]
+  },
+  {
+    "cohort_id": "avoc_low_voc_high_age_40_60",
+    "label": "Low ambient VOC, high serum VOC, middle-aged",
+    "layer": 3,
+    "criteria": "ambient_voc_ppb < 10 AND voc_mg_l >= 5 AND 40 <= age < 60",
+    "variables_required": [
+      "ambient_voc_ppb",
+      "voc_mg_l",
+      "age"
+    ]
+  },
+  {
+    "cohort_id": "age_gte60_gg3_education_gte16",
+    "label": "Older, GG-3, well-educated",
+    "layer": 3,
+    "criteria": "age >= 60 AND genotype_group = GG-3 AND years_of_education >= 16",
+    "variables_required": [
+      "age",
+      "genotype_group",
+      "years_of_education"
+    ]
+  },
+  {
+    "cohort_id": "prb1_lt25_voc_gte5_acron_lt2",
+    "label": "Low PRB1, high VOC, low Acron",
+    "layer": 3,
+    "criteria": "prb1_ratio < 25 AND voc_mg_l >= 5 AND acron_use_avg < 2",
+    "variables_required": [
+      "prb1_ratio",
+      "voc_mg_l",
+      "acron_use_avg"
+    ]
+  },
+  {
+    "cohort_id": "gg1_family_history_cognitive_lt050",
+    "label": "GG-1, family hx, impaired cognition",
+    "layer": 3,
+    "criteria": "genotype_group = GG-1 AND family_history = yes AND cognitive_score (low: MMSE < 23 | MoCA < 20 | AD8 > 4)",
+    "variables_required": [
+      "genotype_group",
+      "family_history",
+      "cognitive_score"
+    ]
+  },
+  {
+    "cohort_id": "prb1_gte30_acron_gte4_voc_lt3",
+    "label": "High PRB1, high Acron, low VOC",
+    "layer": 3,
+    "criteria": "prb1_ratio >= 30 AND acron_use_avg >= 4 AND voc_mg_l < 3",
+    "variables_required": [
+      "prb1_ratio",
+      "acron_use_avg",
+      "voc_mg_l"
+    ]
+  },
+  {
+    "cohort_id": "avoc_gte15_gg1_age_gte55",
+    "label": "High ambient VOC, GG-1, older",
+    "layer": 3,
+    "criteria": "ambient_voc_ppb >= 15 AND genotype_group = GG-1 AND age >= 55",
+    "variables_required": [
+      "ambient_voc_ppb",
+      "genotype_group",
+      "age"
+    ]
+  },
+  {
+    "cohort_id": "cognitive_gte075_age_gte60_gg3",
+    "label": "Good cognition, older, GG-3",
+    "layer": 3,
+    "criteria": "cognitive_score (high: MMSE >= 26 | MoCA >= 23 | AD8 <= 2) AND age >= 60 AND genotype_group = GG-3",
+    "variables_required": [
+      "cognitive_score",
+      "age",
+      "genotype_group"
+    ]
+  },
+  {
+    "cohort_id": "cognitive_lt050_prb1_gte28_acron_lt2",
+    "label": "Impaired cognition, high PRB1, low Acron",
+    "layer": 3,
+    "criteria": "cognitive_score (low: MMSE < 23 | MoCA < 20 | AD8 > 4) AND prb1_ratio >= 28 AND acron_use_avg < 2",
+    "variables_required": [
+      "cognitive_score",
+      "prb1_ratio",
+      "acron_use_avg"
+    ]
+  },
+  {
+    "cohort_id": "gg3_education_gte16_voc_3_6",
+    "label": "GG-3, educated, moderate VOC",
+    "layer": 3,
+    "criteria": "genotype_group = GG-3 AND years_of_education >= 16 AND 3 <= voc_mg_l < 6",
+    "variables_required": [
+      "genotype_group",
+      "years_of_education",
+      "voc_mg_l"
+    ]
+  }
+]

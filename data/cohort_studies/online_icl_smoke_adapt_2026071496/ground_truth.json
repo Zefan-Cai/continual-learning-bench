@@ -1,0 +1,254 @@
+[
+  {
+    "cohort_id": "voc_3_6",
+    "survival_12m": 0.652981,
+    "survival_24m": 0.317452,
+    "survival_36m": 0.120114,
+    "n_patients": 21183
+  },
+  {
+    "cohort_id": "acron_lt2",
+    "survival_12m": 0.606822,
+    "survival_24m": 0.2668,
+    "survival_36m": 0.088721,
+    "n_patients": 19518
+  },
+  {
+    "cohort_id": "family_history_yes",
+    "survival_12m": 0.720915,
+    "survival_24m": 0.400866,
+    "survival_36m": 0.187048,
+    "n_patients": 16332
+  },
+  {
+    "cohort_id": "hhbp_gte8",
+    "survival_12m": 0.499152,
+    "survival_24m": 0.243677,
+    "survival_36m": 0.106789,
+    "n_patients": 15361
+  },
+  {
+    "cohort_id": "avoc_high_prb1_lt25",
+    "survival_12m": 0.719292,
+    "survival_24m": 0.49795,
+    "survival_36m": 0.320606,
+    "n_patients": 2959
+  },
+  {
+    "cohort_id": "avoc_high_education_gte16",
+    "survival_12m": 0.767419,
+    "survival_24m": 0.397599,
+    "survival_36m": 0.157025,
+    "n_patients": 5307
+  },
+  {
+    "cohort_id": "avoc_gte15_gg1",
+    "survival_12m": 0.791515,
+    "survival_24m": 0.450941,
+    "survival_36m": 0.227868,
+    "n_patients": 5095
+  },
+  {
+    "cohort_id": "family_history_gg3",
+    "survival_12m": 0.650315,
+    "survival_24m": 0.359637,
+    "survival_36m": 0.164554,
+    "n_patients": 6091
+  },
+  {
+    "cohort_id": "family_history_prb1_gte28",
+    "survival_12m": 0.758449,
+    "survival_24m": 0.392907,
+    "survival_36m": 0.155281,
+    "n_patients": 8932
+  },
+  {
+    "cohort_id": "education_gte16_cognitive_lt050",
+    "survival_12m": 0.405481,
+    "survival_24m": 0.22361,
+    "survival_36m": 0.147943,
+    "n_patients": 1343
+  },
+  {
+    "cohort_id": "education_gte16_gg3",
+    "survival_12m": 0.744165,
+    "survival_24m": 0.425118,
+    "survival_36m": 0.192378,
+    "n_patients": 6898
+  },
+  {
+    "cohort_id": "education_lt13_gg1",
+    "survival_12m": 0.850777,
+    "survival_24m": 0.648371,
+    "survival_36m": 0.450478,
+    "n_patients": 8308
+  },
+  {
+    "cohort_id": "acron_lt2_prb1_24_28",
+    "survival_12m": 0.498553,
+    "survival_24m": 0.214812,
+    "survival_36m": 0.079391,
+    "n_patients": 5482
+  },
+  {
+    "cohort_id": "prb1_gte28_acron_gte4",
+    "survival_12m": 0.806644,
+    "survival_24m": 0.514446,
+    "survival_36m": 0.270143,
+    "n_patients": 3345
+  },
+  {
+    "cohort_id": "voc_3_6_prb1_lt25",
+    "survival_12m": 0.455192,
+    "survival_24m": 0.208647,
+    "survival_36m": 0.088562,
+    "n_patients": 3932
+  },
+  {
+    "cohort_id": "gg3_voc_lt3",
+    "survival_12m": 0.771789,
+    "survival_24m": 0.47491,
+    "survival_36m": 0.240449,
+    "n_patients": 5316
+  },
+  {
+    "cohort_id": "age_gte55_acron_gte4",
+    "survival_12m": 0.779955,
+    "survival_24m": 0.472258,
+    "survival_36m": 0.226286,
+    "n_patients": 4525
+  },
+  {
+    "cohort_id": "cognitive_lt050_age_lt55",
+    "survival_12m": 0.564363,
+    "survival_24m": 0.406607,
+    "survival_36m": 0.295939,
+    "n_patients": 13178
+  },
+  {
+    "cohort_id": "hhbp_gte8_prb1_lt25",
+    "survival_12m": 0.312805,
+    "survival_24m": 0.120275,
+    "survival_36m": 0.056838,
+    "n_patients": 4731
+  },
+  {
+    "cohort_id": "age_40_60_voc_gte5",
+    "survival_12m": 0.396068,
+    "survival_24m": 0.127322,
+    "survival_36m": 0.030461,
+    "n_patients": 8444
+  },
+  {
+    "cohort_id": "avoc_high_family_history_prb1_gte28",
+    "survival_12m": 0.765184,
+    "survival_24m": 0.380356,
+    "survival_36m": 0.139604,
+    "n_patients": 2688
+  },
+  {
+    "cohort_id": "education_high_voc_high_acron_low",
+    "survival_12m": 0.658942,
+    "survival_24m": 0.262755,
+    "survival_36m": 0.063243,
+    "n_patients": 2517
+  },
+  {
+    "cohort_id": "family_history_gg3_voc_gte5",
+    "survival_12m": 0.343088,
+    "survival_24m": 0.119492,
+    "survival_36m": 0.043267,
+    "n_patients": 1541
+  },
+  {
+    "cohort_id": "avoc_high_cognitive_low_family_history",
+    "survival_12m": 0.527751,
+    "survival_24m": 0.341878,
+    "survival_36m": 0.233413,
+    "n_patients": 466
+  },
+  {
+    "cohort_id": "education_low_prb1_gte28_gg3",
+    "survival_12m": 0.469791,
+    "survival_24m": 0.217841,
+    "survival_36m": 0.093448,
+    "n_patients": 1378
+  },
+  {
+    "cohort_id": "acron_high_hhbp_high_prb1_lt25",
+    "survival_12m": 0.471853,
+    "survival_24m": 0.25098,
+    "survival_36m": 0.129787,
+    "n_patients": 683
+  },
+  {
+    "cohort_id": "family_history_education_gte16_prb1_lt25",
+    "survival_12m": 0.742182,
+    "survival_24m": 0.431882,
+    "survival_36m": 0.206209,
+    "n_patients": 1122
+  },
+  {
+    "cohort_id": "avoc_low_voc_high_age_40_60",
+    "survival_12m": 0.340235,
+    "survival_24m": 0.099647,
+    "survival_36m": 0.024586,
+    "n_patients": 5196
+  },
+  {
+    "cohort_id": "age_gte60_gg3_education_gte16",
+    "survival_12m": 0.799325,
+    "survival_24m": 0.476618,
+    "survival_36m": 0.221911,
+    "n_patients": 4384
+  },
+  {
+    "cohort_id": "prb1_lt25_voc_gte5_acron_lt2",
+    "survival_12m": 0.230372,
+    "survival_24m": 0.04278,
+    "survival_36m": 0.01062,
+    "n_patients": 1969
+  },
+  {
+    "cohort_id": "gg1_family_history_cognitive_lt050",
+    "survival_12m": 0.803004,
+    "survival_24m": 0.623275,
+    "survival_36m": 0.444917,
+    "n_patients": 1078
+  },
+  {
+    "cohort_id": "prb1_gte30_acron_gte4_voc_lt3",
+    "survival_12m": 0.826484,
+    "survival_24m": 0.52046,
+    "survival_36m": 0.263525,
+    "n_patients": 994
+  },
+  {
+    "cohort_id": "avoc_gte15_gg1_age_gte55",
+    "survival_12m": 0.753321,
+    "survival_24m": 0.352931,
+    "survival_36m": 0.116792,
+    "n_patients": 2100
+  },
+  {
+    "cohort_id": "cognitive_gte075_age_gte60_gg3",
+    "survival_12m": 0.81754,
+    "survival_24m": 0.495349,
+    "survival_36m": 0.233504,
+    "n_patients": 6155
+  },
+  {
+    "cohort_id": "cognitive_lt050_prb1_gte28_acron_lt2",
+    "survival_12m": 0.275126,
+    "survival_24m": 0.065732,
+    "survival_36m": 0.01677,
+    "n_patients": 901
+  },
+  {
+    "cohort_id": "gg3_education_gte16_voc_3_6",
+    "survival_12m": 0.751198,
+    "survival_24m": 0.422604,
+    "survival_36m": 0.186768,
+    "n_patients": 3506
+  }
+]

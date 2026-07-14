@@ -67,6 +67,8 @@ _FROZEN_TAPE_MECHANISM_LABEL = (
 _FROZEN_TAPE_SAMPLING_RNG_BINDING = (
     "ambient_runner_rng; grpo_run_seed registered but not locally forked"
 )
+_ICL_CONTEXT_SNAPSHOT_SCHEMA_VERSION = 1
+_ICL_CONTEXT_SNAPSHOT_PROTOCOL = "qwen_local_icl_context_snapshot_v1"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 
@@ -247,9 +249,7 @@ class QwenLocalSystem(ContinualLearningSystem):
                 "when both are supplied"
             )
         adapter_init_seed = (
-            grpo_adapter_init_seed
-            if adapter_init_seed is None
-            else adapter_init_seed
+            grpo_adapter_init_seed if adapter_init_seed is None else adapter_init_seed
         )
         if grpo_candidate_proposer is None:
             grpo_candidate_proposer = "policy_sample"
@@ -432,6 +432,13 @@ class QwenLocalSystem(ContinualLearningSystem):
         self._last_action_training_ids: list[int] | None = None
         self._last_action_prompt_tokens: int | None = None
         self._last_response_integrity: dict[str, Any] | None = None
+        self._icl_context_observation_pending = False
+        self._icl_context_lifecycle_invalid = False
+        # One-way gate used by reward-aware online ICL after adaptation.  Once
+        # sealed, held-out harness rewards may never enter the prompt-bearing
+        # state, even transiently through Query.feedback or observe().
+        self._icl_context_sealed_eval = False
+        self._icl_context_sensitive_feedback_drops = 0
         self._tokenizer = None
         self._model = None
         self._lora_enabled = False
@@ -474,7 +481,7 @@ class QwenLocalSystem(ContinualLearningSystem):
         ``freeze_parameter_updates`` so a normal continual rollout can retain its
         history while never updating.
         """
-        if self._frozen_tape_heldout_eval:
+        if self._frozen_tape_heldout_eval or self._icl_context_sealed_eval:
             enabled = False
         elif self._uses_instance_group_pg():
             enabled = bool(enabled) and not self.freeze_parameter_updates
@@ -519,8 +526,322 @@ class QwenLocalSystem(ContinualLearningSystem):
         self._last_action_training_ids = None
         self._last_action_prompt_tokens = None
         self._last_response_integrity = None
+        self._icl_context_observation_pending = False
+        self._icl_context_lifecycle_invalid = False
+        self._icl_context_sensitive_feedback_drops = 0
+
+    # ------------------------------------------------------------------
+    # Matched-ICL context isolation
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _icl_context_canonical_bytes(value: Any) -> bytes:
+        try:
+            return json.dumps(
+                value,
+                ensure_ascii=False,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "ICL context snapshot is not canonical-JSON encodable"
+            ) from exc
+
+    @classmethod
+    def _icl_context_digest(cls, value: Any) -> str:
+        return hashlib.sha256(cls._icl_context_canonical_bytes(value)).hexdigest()
+
+    @staticmethod
+    def _icl_context_exact_keys(
+        value: Any, expected: set[str], *, where: str
+    ) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            raise ValueError(f"{where} must be an object")
+        actual = set(value)
+        if actual != expected:
+            raise ValueError(
+                f"{where} schema mismatch: missing={sorted(expected - actual)}, "
+                f"extra={sorted(actual - expected)}"
+            )
+        return value
+
+    def _icl_context_system_contract(self) -> dict[str, Any]:
+        return {
+            "action_max_new_tokens": self.action_max_new_tokens,
+            "adaptation_context_policy": self.adaptation_context_policy,
+            "best_of_n": self.best_of_n,
+            "bon_critic": self.bon_critic,
+            "context_policy": self.context_policy,
+            "distill_provider": self.distill_provider,
+            "head_tokens": self.head_tokens,
+            "inject_env_reward": self.inject_env_reward,
+            "sealed_eval": self._icl_context_sealed_eval,
+            "max_context_tokens": self.max_context_tokens,
+            "max_new_tokens": self.max_new_tokens,
+            "method": self.method,
+            "model_path": self.model_path,
+            "parse_retries": self.parse_retries,
+            "system_prompt_chars": len(self.system_prompt),
+            "system_prompt_sha256": hashlib.sha256(
+                self.system_prompt.encode("utf-8")
+            ).hexdigest(),
+            "tail_tokens": self.tail_tokens,
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+        }
+
+    def _assert_icl_context_snapshot_supported(self) -> None:
+        problems = []
+        if self.method != "icl":
+            problems.append("method must be 'icl'")
+        # With best_of_n > 1, qwen_local can train an adapter even when method is
+        # named ICL. A context-only restore cannot roll those parameters back.
+        if self.best_of_n != 1:
+            problems.append("best_of_n must equal 1")
+        if self._lora_enabled:
+            problems.append("a trainable adapter is already enabled")
+        update_counters = {
+            "adaptation_count": self.adaptation_count,
+            "bon_updates": getattr(self, "bon_updates", 0),
+            "distill_updates": getattr(self, "distill_updates", 0),
+            "grpo_optimizer_steps": self.grpo_optimizer_steps,
+            "grpo_updates": self.grpo_updates,
+            "reward_pg_updates": self.reward_pg_updates,
+        }
+        nonzero_updates = {
+            key: value for key, value in update_counters.items() if value != 0
+        }
+        if nonzero_updates:
+            problems.append(f"parameter-update counters are nonzero: {nonzero_updates}")
+        if self._reward_history:
+            problems.append("reward-update history is non-empty")
+        if problems:
+            raise RuntimeError(
+                "ICL context snapshot contract violation: " + "; ".join(problems)
+            )
+
+    def _assert_icl_context_quiescent(self, *, where: str) -> None:
+        pending = []
+        if self._icl_context_observation_pending:
+            pending.append("observation")
+        if self._icl_context_lifecycle_invalid:
+            pending.append("invalid response/observation lifecycle")
+        if getattr(self, "_pending_env_bon", None) is not None:
+            pending.append("env-BoN update")
+        if self._last_action_training_ids is not None:
+            pending.append("action training ids")
+        if self._last_action_prompt_tokens is not None:
+            pending.append("action prompt boundary")
+        if self._last_response_integrity is not None:
+            pending.append("response integrity record")
+        if pending:
+            raise RuntimeError(
+                f"ICL context {where} is not quiescent; pending=" + ", ".join(pending)
+            )
+
+    def seal_icl_context_for_evaluation(self) -> None:
+        """Irreversibly disable held-out reward ingestion for this ICL system.
+
+        Reward-aware ICL uses environment rewards during the adaptation
+        rollout.  The terminal adaptation context is then sealed and cloned for
+        held-out conditions.  The gate intentionally survives ``reset()`` so a
+        later runner call cannot accidentally re-enable reward leakage.
+        """
+        self._assert_icl_context_snapshot_supported()
+        self._assert_icl_context_quiescent(where="seal source")
+        self._icl_context_sealed_eval = True
+        super().set_parameter_updates_enabled(False)
+
+    def _icl_context_state_payload(self) -> dict[str, Any]:
+        return {
+            "has_truncated_flag": self.has_truncated_flag,
+            "icl_env_reward_injections": self.icl_env_reward_injections,
+            "interaction_count": self.interaction_count,
+            "messages": [dict(message) for message in self.messages],
+            "truncation_count": self.truncation_count,
+        }
+
+    def _icl_context_snapshot_payload(self) -> dict[str, Any]:
+        return {
+            "protocol": _ICL_CONTEXT_SNAPSHOT_PROTOCOL,
+            "schema_version": _ICL_CONTEXT_SNAPSHOT_SCHEMA_VERSION,
+            "state": self._icl_context_state_payload(),
+            "system_contract": self._icl_context_system_contract(),
+        }
+
+    @staticmethod
+    def _icl_context_nonnegative_int(value: Any, *, where: str) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"{where} must be a non-negative integer")
+        return value
+
+    def _validate_icl_context_state(self, state: Any) -> dict[str, Any]:
+        state = self._icl_context_exact_keys(
+            state,
+            {
+                "has_truncated_flag",
+                "icl_env_reward_injections",
+                "interaction_count",
+                "messages",
+                "truncation_count",
+            },
+            where="ICL context snapshot state",
+        )
+        messages = state["messages"]
+        if not isinstance(messages, list):
+            raise ValueError("ICL context snapshot messages must be a list")
+        normalized_messages: list[dict[str, str]] = []
+        for index, message in enumerate(messages):
+            message = self._icl_context_exact_keys(
+                message,
+                {"content", "role"},
+                where=f"ICL context snapshot messages[{index}]",
+            )
+            role = message["role"]
+            content = message["content"]
+            if role not in {"assistant", "user"}:
+                raise ValueError(
+                    f"ICL context snapshot messages[{index}].role is invalid"
+                )
+            if not isinstance(content, str):
+                raise ValueError(
+                    f"ICL context snapshot messages[{index}].content must be a string"
+                )
+            normalized_messages.append({"role": role, "content": content})
+        if not isinstance(state["has_truncated_flag"], bool):
+            raise ValueError("ICL context has_truncated_flag must be boolean")
+        normalized = {
+            "has_truncated_flag": state["has_truncated_flag"],
+            "icl_env_reward_injections": self._icl_context_nonnegative_int(
+                state["icl_env_reward_injections"],
+                where="ICL context icl_env_reward_injections",
+            ),
+            "interaction_count": self._icl_context_nonnegative_int(
+                state["interaction_count"],
+                where="ICL context interaction_count",
+            ),
+            "messages": normalized_messages,
+            "truncation_count": self._icl_context_nonnegative_int(
+                state["truncation_count"],
+                where="ICL context truncation_count",
+            ),
+        }
+        assistant_count = sum(
+            message["role"] == "assistant" for message in normalized_messages
+        )
+        if assistant_count > normalized["interaction_count"]:
+            raise ValueError(
+                "ICL context has more assistant messages than interactions"
+            )
+        return normalized
+
+    def _validate_icl_context_snapshot(
+        self, snapshot: Any
+    ) -> tuple[dict[str, Any], str]:
+        snapshot = self._icl_context_exact_keys(
+            snapshot,
+            {
+                "protocol",
+                "schema_version",
+                "snapshot_sha256",
+                "state",
+                "system_contract",
+            },
+            where="ICL context snapshot",
+        )
+        snapshot_sha256 = snapshot["snapshot_sha256"]
+        if (
+            not isinstance(snapshot_sha256, str)
+            or _SHA256_RE.fullmatch(snapshot_sha256) is None
+        ):
+            raise ValueError("ICL context snapshot SHA256 is malformed")
+        payload = {
+            key: snapshot[key]
+            for key in ("protocol", "schema_version", "state", "system_contract")
+        }
+        if self._icl_context_digest(payload) != snapshot_sha256:
+            raise ValueError("ICL context snapshot SHA256 mismatch")
+        if snapshot["protocol"] != _ICL_CONTEXT_SNAPSHOT_PROTOCOL:
+            raise ValueError("ICL context snapshot protocol mismatch")
+        if snapshot["schema_version"] != _ICL_CONTEXT_SNAPSHOT_SCHEMA_VERSION:
+            raise ValueError("ICL context snapshot schema_version mismatch")
+        if self._icl_context_canonical_bytes(snapshot["system_contract"]) != (
+            self._icl_context_canonical_bytes(self._icl_context_system_contract())
+        ):
+            raise ValueError("ICL context snapshot system contract mismatch")
+        return self._validate_icl_context_state(snapshot["state"]), snapshot_sha256
+
+    def snapshot_icl_context(self) -> dict[str, Any]:
+        """Freeze a canonical, integrity-bound pure-ICL prompt state.
+
+        The snapshot intentionally excludes model/tokenizer caches, usage events,
+        and unfinished response/update state. It is safe to reuse before every
+        matched held-out instance because restore rejects any non-quiescent
+        boundary and clears all per-action transients.
+        """
+        self._assert_icl_context_snapshot_supported()
+        self._assert_icl_context_quiescent(where="snapshot source")
+        payload = self._icl_context_snapshot_payload()
+        snapshot = {
+            **payload,
+            "snapshot_sha256": self._icl_context_digest(payload),
+        }
+        # JSON round-trip returns a detached tree and proves serializability.
+        return json.loads(self._icl_context_canonical_bytes(snapshot))
+
+    def tokenize_icl_context_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        """Render and tokenize a validated snapshot without mutating live state."""
+        state, snapshot_sha256 = self._validate_icl_context_snapshot(snapshot)
+        rendered = self._render_messages([*self._system_messages(), *state["messages"]])
+        token_ids = self._load_tokenizer().encode(rendered, add_special_tokens=False)
+        inventory = {
+            "rendered_prompt_sha256": hashlib.sha256(
+                rendered.encode("utf-8")
+            ).hexdigest(),
+            "snapshot_sha256": snapshot_sha256,
+            "token_count": len(token_ids),
+            "token_ids": list(token_ids),
+        }
+        inventory["token_ids_sha256"] = self._icl_context_digest(token_ids)
+        return inventory
+
+    def _apply_icl_context_state(self, state: dict[str, Any]) -> None:
+        self.messages = [dict(message) for message in state["messages"]]
+        self.interaction_count = state["interaction_count"]
+        self.truncation_count = state["truncation_count"]
+        self.has_truncated_flag = state["has_truncated_flag"]
+        self.icl_env_reward_injections = state["icl_env_reward_injections"]
+        self._pending_env_bon = None
+        self._last_action_training_ids = None
+        self._last_action_prompt_tokens = None
+        self._last_response_integrity = None
+        self._icl_context_observation_pending = False
+        self._icl_context_lifecycle_invalid = False
+
+    def restore_icl_context(self, snapshot: dict[str, Any]) -> None:
+        """Restore one frozen ICL context transactionally and verify it again."""
+        self._assert_icl_context_snapshot_supported()
+        self._assert_icl_context_quiescent(where="restore target")
+        state, expected_sha256 = self._validate_icl_context_snapshot(snapshot)
+        previous_state = self._icl_context_state_payload()
+        try:
+            self._apply_icl_context_state(state)
+            restored_payload = self._icl_context_snapshot_payload()
+            if self._icl_context_digest(restored_payload) != expected_sha256:
+                raise RuntimeError(
+                    "ICL context restore post-restore integrity verification failed"
+                )
+        except Exception:
+            self._apply_icl_context_state(previous_state)
+            raise
 
     def respond(self, query: Query) -> Response:
+        if self.method == "icl":
+            if self._icl_context_observation_pending:
+                self._icl_context_lifecycle_invalid = True
+            self._icl_context_observation_pending = True
         self.interaction_count += 1
         query_content = self._query_content(query)
         if self._uses_instance_group_pg():
@@ -606,6 +927,17 @@ class QwenLocalSystem(ContinualLearningSystem):
                 )
 
         assert parsed_action is not None
+        final_generation_debug = attempt_debugs[-1]
+        generation_calls = len(attempt_debugs)
+        generation_input_tokens_total = sum(
+            int(debug.get("prompt_tokens", 0)) for debug in attempt_debugs
+        )
+        generation_output_tokens_total = sum(
+            int(debug.get("new_token_count", 0)) for debug in attempt_debugs
+        )
+        generation_prompt_hard_truncations = sum(
+            bool(debug.get("prompt_hard_truncated", False)) for debug in attempt_debugs
+        )
         assistant_record = parsed_action.model_dump_json()
         self._remember_last_action_training_example(
             prompt_for_attempt, assistant_record
@@ -709,10 +1041,26 @@ class QwenLocalSystem(ContinualLearningSystem):
                 "adaptation_context_policy": self.adaptation_context_policy,
                 "interaction_count": self.interaction_count,
                 "prompt_tokens": input_tokens,
+                "prompt_tokens_before_hard_cap": final_generation_debug.get(
+                    "prompt_tokens_before_hard_cap", input_tokens
+                ),
+                "prompt_token_budget": final_generation_debug.get(
+                    "prompt_token_budget"
+                ),
+                "prompt_hard_truncated": bool(
+                    final_generation_debug.get("prompt_hard_truncated", False)
+                ),
+                "generation_calls": generation_calls,
+                "generation_input_tokens_total": generation_input_tokens_total,
+                "generation_output_tokens_total": generation_output_tokens_total,
+                "generation_prompt_hard_truncations": (
+                    generation_prompt_hard_truncations
+                ),
                 "output_tokens": output_tokens,
                 "generation_max_new_tokens": generation_max_new_tokens,
                 "parse_retries_used": len(parse_errors),
                 "parse_repair_used": parse_repair_used,
+                "icl_context_sealed_eval": self._icl_context_sealed_eval,
                 "has_truncated": self.has_truncated_flag,
                 "truncation_count": self.truncation_count,
                 "adaptation_count": self.adaptation_count,
@@ -773,6 +1121,17 @@ class QwenLocalSystem(ContinualLearningSystem):
     def observe(
         self, observation: Observation, next_query: Query | None = None
     ) -> None:
+        icl_action_committed = True
+        if self.method == "icl":
+            integrity = self._last_response_integrity
+            icl_action_committed = (
+                self._icl_context_observation_pending
+                and self._last_action_training_ids is not None
+                and self._last_action_prompt_tokens is not None
+                and isinstance(integrity, dict)
+                and integrity.get("schema_valid") is True
+                and integrity.get("hard_schema_failure") is False
+            )
         content = observation.content.strip()
         meta = observation.metadata or {}
         env_reward = meta.get("env_feedback_reward")
@@ -835,7 +1194,12 @@ class QwenLocalSystem(ContinualLearningSystem):
         ):
             self._env_best_of_n_train(observation)
         parts: list[str] = []
-        if content:
+        sealed_terminal = (
+            self._icl_context_sealed_eval and observation.instance_complete
+        )
+        if sealed_terminal:
+            self._icl_context_sensitive_feedback_drops += 1
+        if content and not sealed_terminal:
             parts.append(f"FEEDBACK: {content}")
         # ICL has no parameter-update path, so it can only consume the harness
         # reward in-context. Surface env_feedback_reward (present in observation
@@ -844,7 +1208,7 @@ class QwenLocalSystem(ContinualLearningSystem):
         # When inject_env_reward is set, TTT-RL also surfaces the reward in-context
         # (in addition to its reward_pg gradient) so it becomes a strict superset
         # of ICL: same in-context reward signal plus a parameter update.
-        if self.inject_env_reward:
+        if self.inject_env_reward and not self._icl_context_sealed_eval:
             meta = observation.metadata or {}
             reward = meta.get("env_feedback_reward")
             if isinstance(reward, (int, float)) and not isinstance(reward, bool):
@@ -855,6 +1219,13 @@ class QwenLocalSystem(ContinualLearningSystem):
                 self.icl_env_reward_injections += 1
         if parts:
             self.messages.append({"role": "user", "content": "\n".join(parts)})
+        if self.method == "icl":
+            if not icl_action_committed:
+                self._icl_context_lifecycle_invalid = True
+            self._last_action_training_ids = None
+            self._last_action_prompt_tokens = None
+            self._last_response_integrity = None
+            self._icl_context_observation_pending = False
 
     def get_run_artifacts(self) -> dict[str, Any]:
         artifacts = {
@@ -862,6 +1233,10 @@ class QwenLocalSystem(ContinualLearningSystem):
             "method": self.method,
             "icl_env_reward_injections": self.icl_env_reward_injections,
             "inject_env_reward": self.inject_env_reward,
+            "icl_context_sealed_eval": self._icl_context_sealed_eval,
+            "icl_context_sensitive_feedback_drops": (
+                self._icl_context_sensitive_feedback_drops
+            ),
             "distill_provider": self.distill_provider,
             "distill_contrastive": self.distill_contrastive,
             "distill_updates": getattr(self, "distill_updates", 0),
@@ -939,7 +1314,9 @@ class QwenLocalSystem(ContinualLearningSystem):
                 separators=(",", ":"),
             ).encode("utf-8")
         except (TypeError, ValueError) as exc:
-            raise ValueError("Frozen update tape is not canonical-JSON encodable") from exc
+            raise ValueError(
+                "Frozen update tape is not canonical-JSON encodable"
+            ) from exc
 
     @classmethod
     def _frozen_tape_digest(cls, value: Any) -> str:
@@ -1076,14 +1453,19 @@ class QwenLocalSystem(ContinualLearningSystem):
         if provenance["requested_best_of_n"] < 2:
             raise ValueError("Frozen tape sampling requested_best_of_n must be >=2")
         prompt_hash = provenance["sampling_prompt_sha256"]
-        if not isinstance(prompt_hash, str) or _SHA256_RE.fullmatch(prompt_hash) is None:
+        if (
+            not isinstance(prompt_hash, str)
+            or _SHA256_RE.fullmatch(prompt_hash) is None
+        ):
             raise ValueError("Frozen tape sampling prompt hash is malformed")
         if provenance["sampling_rng_binding"] != _FROZEN_TAPE_SAMPLING_RNG_BINDING:
             raise ValueError("Frozen tape sampling RNG binding mismatch")
         if provenance["candidate_count"] < 2:
             raise ValueError("Frozen tape sampling candidate_count must be >=2")
         if provenance["valid_unique"] > provenance["candidate_count"]:
-            raise ValueError("Frozen tape sampling valid_unique exceeds candidate_count")
+            raise ValueError(
+                "Frozen tape sampling valid_unique exceeds candidate_count"
+            )
         normalized = {key: provenance[key] for key in base_keys}
         digest = self._frozen_tape_digest(normalized)
         if has_digest and provenance["provenance_sha256"] != digest:
@@ -1150,7 +1532,10 @@ class QwenLocalSystem(ContinualLearningSystem):
             raise ValueError("env_bon_prompt must be a non-empty string")
         if not isinstance(env_bon_candidates, list) or len(env_bon_candidates) < 2:
             raise ValueError("env_bon_candidates must contain at least two candidates")
-        if any(not isinstance(candidate, str) or not candidate for candidate in env_bon_candidates):
+        if any(
+            not isinstance(candidate, str) or not candidate
+            for candidate in env_bon_candidates
+        ):
             raise ValueError("env_bon_candidates must contain non-empty strings")
         if not isinstance(env_bon_rewards, list) or len(env_bon_rewards) != len(
             env_bon_candidates
@@ -1178,7 +1563,9 @@ class QwenLocalSystem(ContinualLearningSystem):
         candidate_records = [
             {
                 "candidate": candidate,
-                "candidate_sha256": hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
+                "candidate_sha256": hashlib.sha256(
+                    candidate.encode("utf-8")
+                ).hexdigest(),
                 "reward": reward,
                 "reward_sha256": self._frozen_tape_digest(reward),
             }
@@ -1209,9 +1596,7 @@ class QwenLocalSystem(ContinualLearningSystem):
             )
         selected_batches: list[dict[str, Any]] = []
         for role, candidate_index, candidate, signed_weight in batch_specs:
-            batch = self._build_distill_batch(
-                env_bon_prompt, candidate, signed_weight
-            )
+            batch = self._build_distill_batch(env_bon_prompt, candidate, signed_weight)
             if batch is None:
                 raise ValueError(f"env-BoN {role} selected batch is empty")
             batch_payload = {
@@ -1267,8 +1652,13 @@ class QwenLocalSystem(ContinualLearningSystem):
         if not isinstance(pending, dict):
             raise RuntimeError("No pending env-BoN group to capture")
         if pending.get("lazy_generation") is not None:
-            raise RuntimeError("Frozen-tape collector requires eager historical env-BoN")
-        if self._last_action_training_ids is None or self._last_action_prompt_tokens is None:
+            raise RuntimeError(
+                "Frozen-tape collector requires eager historical env-BoN"
+            )
+        if (
+            self._last_action_training_ids is None
+            or self._last_action_prompt_tokens is None
+        ):
             raise RuntimeError("No committed reward-PG training example to capture")
         candidates = pending.get("candidates")
         if not isinstance(candidates, list):
@@ -1276,7 +1666,9 @@ class QwenLocalSystem(ContinualLearningSystem):
         scored: list[float] = []
         metadata = observation.metadata or {}
         for candidate in candidates:
-            reward = self._score_env_candidate(candidate, pending.get("schema"), metadata)
+            reward = self._score_env_candidate(
+                candidate, pending.get("schema"), metadata
+            )
             if reward is None:
                 raise RuntimeError("Every frozen-tape env-BoN candidate must score")
             scored.append(float(reward))
@@ -1361,7 +1753,9 @@ class QwenLocalSystem(ContinualLearningSystem):
                 or not isinstance(integrity[key], int)
                 or integrity[key] < 0
             ):
-                raise ValueError(f"Frozen tape integrity {key} must be non-negative int")
+                raise ValueError(
+                    f"Frozen tape integrity {key} must be non-negative int"
+                )
         if (
             not integrity["schema_valid"]
             or integrity["synthetic"]
@@ -1422,9 +1816,13 @@ class QwenLocalSystem(ContinualLearningSystem):
         )
         ids = committed["ids"]
         prompt_tokens = committed["prompt_tokens"]
-        if not isinstance(ids, list) or not ids or any(
-            isinstance(token, bool) or not isinstance(token, int) or token < 0
-            for token in ids
+        if (
+            not isinstance(ids, list)
+            or not ids
+            or any(
+                isinstance(token, bool) or not isinstance(token, int) or token < 0
+                for token in ids
+            )
         ):
             raise ValueError("Frozen tape committed ids are malformed")
         if (
@@ -1464,11 +1862,16 @@ class QwenLocalSystem(ContinualLearningSystem):
         prompt = env_bon["prompt"]
         if not isinstance(prompt, str) or not prompt:
             raise ValueError("Frozen tape env-BoN prompt must be non-empty")
-        if env_bon["prompt_sha256"] != hashlib.sha256(prompt.encode("utf-8")).hexdigest():
+        if (
+            env_bon["prompt_sha256"]
+            != hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        ):
             raise ValueError("Frozen tape env-BoN prompt hash mismatch")
         candidate_records = env_bon["candidates"]
         if not isinstance(candidate_records, list) or len(candidate_records) < 2:
-            raise ValueError("Frozen tape env-BoN group must have at least two candidates")
+            raise ValueError(
+                "Frozen tape env-BoN group must have at least two candidates"
+            )
         if sampling_provenance["requested_best_of_n"] != self.best_of_n:
             raise ValueError("Frozen tape requested best_of_n differs from system")
         if sampling_provenance["candidate_count"] != len(candidate_records):
@@ -1485,9 +1888,10 @@ class QwenLocalSystem(ContinualLearningSystem):
             candidate = record["candidate"]
             if not isinstance(candidate, str) or not candidate:
                 raise ValueError("Frozen tape candidates must be non-empty strings")
-            if record["candidate_sha256"] != hashlib.sha256(
-                candidate.encode("utf-8")
-            ).hexdigest():
+            if (
+                record["candidate_sha256"]
+                != hashlib.sha256(candidate.encode("utf-8")).hexdigest()
+            ):
                 raise ValueError("Frozen tape candidate hash mismatch")
             candidate_reward = self._frozen_tape_finite_number(
                 record["reward"], where="candidate reward"
@@ -1512,9 +1916,7 @@ class QwenLocalSystem(ContinualLearningSystem):
         )
         _best_reward, best_candidate, best_index = ranked[0]
         _worst_reward, worst_candidate, worst_index = ranked[-1]
-        expected_specs = [
-            ("positive", best_index, float(self.reward_positive_weight))
-        ]
+        expected_specs = [("positive", best_index, float(self.reward_positive_weight))]
         if (
             self.distill_contrastive
             and self.reward_negative_weight > 0
@@ -1553,9 +1955,13 @@ class QwenLocalSystem(ContinualLearningSystem):
                 raise ValueError("Frozen tape selected batch candidate index mismatch")
             ids = batch["ids"]
             prompt_tokens = batch["prompt_tokens"]
-            if not isinstance(ids, list) or not ids or any(
-                isinstance(token, bool) or not isinstance(token, int) or token < 0
-                for token in ids
+            if (
+                not isinstance(ids, list)
+                or not ids
+                or any(
+                    isinstance(token, bool) or not isinstance(token, int) or token < 0
+                    for token in ids
+                )
             ):
                 raise ValueError("Frozen tape selected batch ids are malformed")
             if (
@@ -1563,7 +1969,9 @@ class QwenLocalSystem(ContinualLearningSystem):
                 or not isinstance(prompt_tokens, int)
                 or not 0 <= prompt_tokens < len(ids)
             ):
-                raise ValueError("Frozen tape selected batch prompt_tokens are malformed")
+                raise ValueError(
+                    "Frozen tape selected batch prompt_tokens are malformed"
+                )
             signed_weight = self._frozen_tape_finite_number(
                 batch["signed_weight"], where="selected batch signed_weight"
             )
@@ -1579,7 +1987,9 @@ class QwenLocalSystem(ContinualLearningSystem):
                 != self._frozen_tape_digest(batch_without_digest)
             ):
                 raise ValueError("Frozen tape selected batch digest mismatch")
-        item_without_digest = {key: value for key, value in item.items() if key != "item_sha256"}
+        item_without_digest = {
+            key: value for key, value in item.items() if key != "item_sha256"
+        }
         if (
             not isinstance(item["item_sha256"], str)
             or _SHA256_RE.fullmatch(item["item_sha256"]) is None
@@ -1594,7 +2004,9 @@ class QwenLocalSystem(ContinualLearningSystem):
         """Assemble ordered items and bind every update-relevant config except LR."""
         self._assert_frozen_tape_system_contract()
         if float(self.ttt_lr) != 0.0 or float(self.reward_pg_lr) != 0.0:
-            raise RuntimeError("Frozen update tape must be assembled by an LR0 collector")
+            raise RuntimeError(
+                "Frozen update tape must be assembled by an LR0 collector"
+            )
         if (
             self._frozen_tape_initial_trainable_state is None
             or self._frozen_tape_initial_hash is None
@@ -1694,7 +2106,9 @@ class QwenLocalSystem(ContinualLearningSystem):
         embedded = tape["tape_sha256"]
         if not isinstance(embedded, str) or _SHA256_RE.fullmatch(embedded) is None:
             raise ValueError("Frozen update tape root digest is malformed")
-        without_digest = {key: value for key, value in tape.items() if key != "tape_sha256"}
+        without_digest = {
+            key: value for key, value in tape.items() if key != "tape_sha256"
+        }
         if embedded != self._frozen_tape_digest(without_digest):
             raise ValueError("Frozen update tape root digest mismatch")
         if expected_tape_sha256 is not None:
@@ -1714,7 +2128,6 @@ class QwenLocalSystem(ContinualLearningSystem):
     def capture_initial_adapter_state(self) -> str:
         """Snapshot the exact initial trainable adapter for later restoration."""
         self._ensure_lora_model()
-        import torch
 
         assert self._model is not None
         if self._frozen_tape_initial_trainable_state is not None:
@@ -1730,7 +2143,9 @@ class QwenLocalSystem(ContinualLearningSystem):
             if parameter.requires_grad
         }
         if not state:
-            raise RuntimeError("Frozen-tape ablation found no trainable adapter parameters")
+            raise RuntimeError(
+                "Frozen-tape ablation found no trainable adapter parameters"
+            )
         current_hash = self._trainable_param_sha256()
         self._frozen_tape_initial_trainable_state = state
         self._frozen_tape_initial_hash = current_hash
@@ -1744,6 +2159,52 @@ class QwenLocalSystem(ContinualLearningSystem):
         """Return an audit hash after ensuring the configured adapter is installed."""
         self._ensure_lora_model()
         return self._trainable_param_sha256()
+
+    def current_model_param_sha256(self) -> str:
+        """Hash the complete loaded model state for no-update ICL auditing.
+
+        The historical method name is retained for compatibility, but the
+        digest covers every tensor in ``state_dict()``: parameters and persistent
+        buffers.  This is intentionally more expensive than the adapter-only
+        hash.  The canonical online-ICL arm calls it only at cell boundaries to
+        prove that no hidden optimizer or in-place model-state mutation occurred.
+        """
+        import torch
+
+        _tokenizer, model = self._load_model()
+        digest = hashlib.sha256()
+        state = sorted(model.state_dict().items(), key=lambda item: item[0])
+        if not state:
+            raise RuntimeError("Cannot hash an empty model-state inventory")
+        for name, tensor in state:
+            if not isinstance(tensor, torch.Tensor):
+                raise RuntimeError(
+                    f"Model state entry {name!r} is not a tensor: "
+                    f"{type(tensor).__name__}"
+                )
+            detached = tensor.detach().contiguous()
+            digest.update(name.encode("utf-8"))
+            digest.update(str(detached.dtype).encode("ascii"))
+            digest.update(self._icl_context_canonical_bytes(list(detached.shape)))
+            digest.update(
+                detached.reshape(-1).view(torch.uint8).cpu().numpy().tobytes()
+            )
+        return digest.hexdigest()
+
+    def icl_no_update_audit(self) -> dict[str, Any]:
+        """Return the fail-closed counters used by canonical online ICL."""
+        model = self._model
+        peft_config = getattr(model, "peft_config", None) if model is not None else None
+        return {
+            "adaptation_count": self.adaptation_count,
+            "adapter_enabled": self._lora_enabled,
+            "bon_updates": getattr(self, "bon_updates", 0),
+            "distill_updates": getattr(self, "distill_updates", 0),
+            "grpo_optimizer_steps": self.grpo_optimizer_steps,
+            "grpo_updates": self.grpo_updates,
+            "peft_config_present": bool(peft_config),
+            "reward_pg_updates": self.reward_pg_updates,
+        }
 
     def restore_initial_adapter_state(self) -> str:
         """Restore the captured pre-replay adapter and verify its exact hash."""
@@ -1766,7 +2227,9 @@ class QwenLocalSystem(ContinualLearningSystem):
                 parameter = trainable[name]
                 if tuple(parameter.shape) != tuple(saved.shape):
                     raise RuntimeError(f"Trainable adapter shape changed for {name}")
-                parameter.copy_(saved.to(device=parameter.device, dtype=parameter.dtype))
+                parameter.copy_(
+                    saved.to(device=parameter.device, dtype=parameter.dtype)
+                )
         restored_hash = self._trainable_param_sha256()
         if restored_hash != self._frozen_tape_initial_hash:
             raise RuntimeError("Initial adapter restore hash mismatch")
@@ -1780,7 +2243,9 @@ class QwenLocalSystem(ContinualLearningSystem):
     ) -> dict[str, Any]:
         """Replay identical update calls; only configured learning rates may differ."""
         if self._frozen_tape_heldout_eval:
-            raise RuntimeError("Cannot replay after held-out evaluation updates are frozen")
+            raise RuntimeError(
+                "Cannot replay after held-out evaluation updates are frozen"
+            )
         validated = self.validate_frozen_update_tape(
             tape, expected_tape_sha256=expected_tape_sha256
         )
@@ -1804,7 +2269,9 @@ class QwenLocalSystem(ContinualLearningSystem):
             reward = float(committed["reward"])
             signed_weight = self._signed_weight_from_reward(reward)
             if signed_weight == 0.0:
-                raise RuntimeError("Frozen-tape reward-PG signed weight unexpectedly zero")
+                raise RuntimeError(
+                    "Frozen-tape reward-PG signed weight unexpectedly zero"
+                )
             reward_before = self._trainable_param_sha256()
             previous_steps = self.ttt_steps
             try:
@@ -1866,8 +2333,7 @@ class QwenLocalSystem(ContinualLearningSystem):
                     "operation": "bon_env_best_worst_sft",
                     "batch_count": len(batches),
                     "input_sha256": [
-                        batch["batch_sha256"]
-                        for batch in env_bon["selected_batches"]
+                        batch["batch_sha256"] for batch in env_bon["selected_batches"]
                     ],
                     "trainable_param_sha256_before": bon_before,
                     "trainable_param_sha256_after": bon_after,
@@ -1906,7 +2372,9 @@ class QwenLocalSystem(ContinualLearningSystem):
         self._frozen_tape_replay_log.append(replay_log)
         if float(self.reward_pg_lr) == 0.0:
             if final_hash != initial_hash:
-                raise RuntimeError("LR0 frozen-tape replay changed trainable parameters")
+                raise RuntimeError(
+                    "LR0 frozen-tape replay changed trainable parameters"
+                )
         elif final_hash == initial_hash:
             raise RuntimeError("Active frozen-tape replay produced no parameter change")
         return replay_log
@@ -1914,7 +2382,9 @@ class QwenLocalSystem(ContinualLearningSystem):
     def freeze_updates_for_heldout_eval(self) -> str:
         """Hard-freeze every update path after replay for held-out evaluation."""
         if self._frozen_tape_last_digest is None:
-            raise RuntimeError("Replay a validated frozen update tape before held-out eval")
+            raise RuntimeError(
+                "Replay a validated frozen update tape before held-out eval"
+            )
         self._frozen_tape_heldout_eval = True
         self._pending_env_bon = None
         super().set_parameter_updates_enabled(False)
@@ -4360,13 +4830,30 @@ class QwenLocalSystem(ContinualLearningSystem):
 
     def _query_content(self, query: Query) -> str:
         pieces: list[str] = []
-        if query.feedback is not None and query.feedback.content.strip():
+        feedback_metadata = (
+            query.feedback.metadata or {} if query.feedback is not None else {}
+        )
+        # Once held-out evaluation is sealed, Query.feedback is never a legal
+        # prompt input.  Do not key this gate on a short sensitive-field list:
+        # terminal content with empty or newly named metadata is sensitive too.
+        sealed_feedback = self._icl_context_sealed_eval and query.feedback is not None
+        if sealed_feedback:
+            self._icl_context_sensitive_feedback_drops += 1
+        if (
+            query.feedback is not None
+            and query.feedback.content.strip()
+            and not sealed_feedback
+        ):
             pieces.append(f"FEEDBACK: {query.feedback.content.strip()}")
         # ICL has no parameter-update path, so it can only consume the harness
         # reward in-context: surface the env_feedback_reward explicitly in the
         # prompt for the ICL method (LoRA/prefix get it via reward_pg instead).
-        if self.method == "icl" and query.feedback is not None:
-            meta = query.feedback.metadata or {}
+        if (
+            self.method == "icl"
+            and not self._icl_context_sealed_eval
+            and query.feedback is not None
+        ):
+            meta = feedback_metadata
             reward = meta.get("env_feedback_reward")
             if isinstance(reward, (int, float)) and not isinstance(reward, bool):
                 pieces.append(

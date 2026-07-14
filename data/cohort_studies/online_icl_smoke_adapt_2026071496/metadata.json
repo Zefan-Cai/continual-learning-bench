@@ -1,0 +1,209 @@
+{
+  "schema_version": 1,
+  "schedule_id": "default",
+  "seed": 2026071496,
+  "population_size": 50000,
+  "n_instances": 20,
+  "instances": [
+    {
+      "instance_index": 0,
+      "stage_index": 1,
+      "study_name": "HERALD",
+      "variant_id": "herald_suburban",
+      "region_slice": "Suburban",
+      "db_filename": "herald_suburban.db",
+      "db_sha256": "553fdee956e407c9f9527e3a5000715c0ad7b43092b3d5712aa875d1e949159d",
+      "n_patients": 196
+    },
+    {
+      "instance_index": 1,
+      "stage_index": 1,
+      "study_name": "HERALD",
+      "variant_id": "herald_rural",
+      "region_slice": "Rural",
+      "db_filename": "herald_rural.db",
+      "db_sha256": "3bcac6eb972739203475d0271fd6a44c8d723a1da3062501094fd246f86c175b",
+      "n_patients": 204
+    },
+    {
+      "instance_index": 2,
+      "stage_index": 1,
+      "study_name": "HERALD",
+      "variant_id": "herald_suburban_s2",
+      "region_slice": "Suburban",
+      "db_filename": "herald_suburban_s2.db",
+      "db_sha256": "cdf3e1de07384cde2dc931b22686ca0122e1f2d7a2503c036c1ea157461e537f",
+      "n_patients": 196
+    },
+    {
+      "instance_index": 3,
+      "stage_index": 1,
+      "study_name": "HERALD",
+      "variant_id": "herald_rural_s2",
+      "region_slice": "Rural",
+      "db_filename": "herald_rural_s2.db",
+      "db_sha256": "aefc43de41cb58101ceb8ec00c4d680dee52dabd83ea3ccc02ea0d5ff4a44907",
+      "n_patients": 204
+    },
+    {
+      "instance_index": 4,
+      "stage_index": 2,
+      "study_name": "MERIDIAN",
+      "variant_id": "meridian_suburban",
+      "region_slice": "Suburban",
+      "db_filename": "meridian_suburban.db",
+      "db_sha256": "0d4910d35e00e79401d8e55c402a7c59cb9b3c392d687d05759b2952eca4bd49",
+      "n_patients": 188
+    },
+    {
+      "instance_index": 5,
+      "stage_index": 2,
+      "study_name": "MERIDIAN",
+      "variant_id": "meridian_rural",
+      "region_slice": "Rural",
+      "db_filename": "meridian_rural.db",
+      "db_sha256": "5eed9dafea694044c6388ce14532968f51caaddcb1f8d1c2f15fab21afff3556",
+      "n_patients": 192
+    },
+    {
+      "instance_index": 6,
+      "stage_index": 2,
+      "study_name": "MERIDIAN",
+      "variant_id": "meridian_suburban_s2",
+      "region_slice": "Suburban",
+      "db_filename": "meridian_suburban_s2.db",
+      "db_sha256": "e54eea6e9042c11a5e0026c2889e77e69a2a180781b81140e7ccd587d754d133",
+      "n_patients": 188
+    },
+    {
+      "instance_index": 7,
+      "stage_index": 2,
+      "study_name": "MERIDIAN",
+      "variant_id": "meridian_rural_s2",
+      "region_slice": "Rural",
+      "db_filename": "meridian_rural_s2.db",
+      "db_sha256": "0057ce81130a9d2be0a3bd54b9034bec71bb4f394d838c0f485e963b949a7cdd",
+      "n_patients": 192
+    },
+    {
+      "instance_index": 8,
+      "stage_index": 3,
+      "study_name": "MOSAIC",
+      "variant_id": "mosaic_urban",
+      "region_slice": "Urban",
+      "db_filename": "mosaic_urban.db",
+      "db_sha256": "4c96c39ccde1e5c75167480f3ccabaf4f864ce09a2ff77ed3cefff38330ded01",
+      "n_patients": 129
+    },
+    {
+      "instance_index": 9,
+      "stage_index": 3,
+      "study_name": "MOSAIC",
+      "variant_id": "mosaic_suburban",
+      "region_slice": "Suburban",
+      "db_filename": "mosaic_suburban.db",
+      "db_sha256": "ddb4895a5bc75e54688f6111b1640231d72c49f01dd852c1ae09bd5931fec94e",
+      "n_patients": 190
+    },
+    {
+      "instance_index": 10,
+      "stage_index": 3,
+      "study_name": "MOSAIC",
+      "variant_id": "mosaic_urban_s2",
+      "region_slice": "Urban",
+      "db_filename": "mosaic_urban_s2.db",
+      "db_sha256": "a46e85031a41a68256a67419dfd18cd475b4bdabec968728e2a0a269e51b7e8b",
+      "n_patients": 130
+    },
+    {
+      "instance_index": 11,
+      "stage_index": 3,
+      "study_name": "MOSAIC",
+      "variant_id": "mosaic_suburban_s2",
+      "region_slice": "Suburban",
+      "db_filename": "mosaic_suburban_s2.db",
+      "db_sha256": "bd9074c772b1278b4b158f8f8b1647b2ceded851c696e94809311ed63103fc6e",
+      "n_patients": 191
+    },
+    {
+      "instance_index": 12,
+      "stage_index": 4,
+      "study_name": "FORGE",
+      "variant_id": "forge_industrial",
+      "region_slice": "Industrial",
+      "db_filename": "forge_industrial.db",
+      "db_sha256": "e209079a610e29e522c5cbeec1ad65a95a1871d9fd3e1c709031b49784619643",
+      "n_patients": 251
+    },
+    {
+      "instance_index": 13,
+      "stage_index": 4,
+      "study_name": "FORGE",
+      "variant_id": "forge_urban",
+      "region_slice": "Urban",
+      "db_filename": "forge_urban.db",
+      "db_sha256": "155f00df379fff9dec64d7fa3489a89b5eabc4817c4ff51e3b8e32ff6ac93839",
+      "n_patients": 128
+    },
+    {
+      "instance_index": 14,
+      "stage_index": 4,
+      "study_name": "FORGE",
+      "variant_id": "forge_industrial_s2",
+      "region_slice": "Industrial",
+      "db_filename": "forge_industrial_s2.db",
+      "db_sha256": "f60420e467cbcc10ade23f054a3c6926bb4e1ed51a6ac160352ebfd8cd4da4a6",
+      "n_patients": 252
+    },
+    {
+      "instance_index": 15,
+      "stage_index": 4,
+      "study_name": "FORGE",
+      "variant_id": "forge_urban_s2",
+      "region_slice": "Urban",
+      "db_filename": "forge_urban_s2.db",
+      "db_sha256": "b3853ef026de04cb4c49a12fcd52efb2f486a3248a8752bc606bb105dd690cf1",
+      "n_patients": 129
+    },
+    {
+      "instance_index": 16,
+      "stage_index": 5,
+      "study_name": "CADENCE",
+      "variant_id": "cadence_urban",
+      "region_slice": "Urban",
+      "db_filename": "cadence_urban.db",
+      "db_sha256": "adb067f39ec7ab302ff1576e5201752438a0ea9f9092331173635f7d39f9c494",
+      "n_patients": 243
+    },
+    {
+      "instance_index": 17,
+      "stage_index": 5,
+      "study_name": "CADENCE",
+      "variant_id": "cadence_industrial",
+      "region_slice": "Industrial",
+      "db_filename": "cadence_industrial.db",
+      "db_sha256": "49b71a19aa90817b9fa550ace2967ff317ee018c0cb28dfea43348e99045aab5",
+      "n_patients": 137
+    },
+    {
+      "instance_index": 18,
+      "stage_index": 5,
+      "study_name": "CADENCE",
+      "variant_id": "cadence_urban_s2",
+      "region_slice": "Urban",
+      "db_filename": "cadence_urban_s2.db",
+      "db_sha256": "330836222edb6debec08beeabf173ee071c49cde03898c517cdce2df496e0b6e",
+      "n_patients": 243
+    },
+    {
+      "instance_index": 19,
+      "stage_index": 5,
+      "study_name": "CADENCE",
+      "variant_id": "cadence_industrial_s2",
+      "region_slice": "Industrial",
+      "db_filename": "cadence_industrial_s2.db",
+      "db_sha256": "9b7ee66def406cca0b1a10572bc3969dd3556051d4eadce49a77e22a3dd0d53a",
+      "n_patients": 137
+    }
+  ]
+}

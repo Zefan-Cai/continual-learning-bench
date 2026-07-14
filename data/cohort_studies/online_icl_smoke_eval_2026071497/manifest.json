@@ -1,0 +1,313 @@
+{
+  "manifest_version": 1,
+  "builder": "experiments/cohort_studies/build_frozen_dataset.py",
+  "schedule_id": "default",
+  "seed": 2026071497,
+  "population_size": 50000,
+  "n_instances": 20,
+  "schedule_sha256": "9afb2b7c569b8fea700073fb8484b57b2ce86d1b94c401e0ee8e7db3e45996f7",
+  "runtime": {
+    "python": "3.14.4",
+    "sqlite": "3.53.0",
+    "numpy": "2.3.4"
+  },
+  "seed_derivation": {
+    "population": "numpy.default_rng(base_seed)",
+    "study_sample": "uint32_be(first_4_bytes(sha256(f'{base_seed}:{study_name}')))",
+    "database": "uint64_be(first_8_bytes(sha256(f'clbench:cohort-studies:db:v1:{base_seed}:{schedule_id}:{variant_id}')))"
+  },
+  "patient_ids_hash_encoding": "concatenated big-endian uint64",
+  "source_sha256": {
+    "experiments/cohort_studies/build_frozen_dataset.py": "b3275ebca9d0fe01337e3d16dfc0ac4e0f56839459f3a96c8d5794123b0ebeca",
+    "src/tasks/cohort_studies/dgp.py": "8582959460f4b2db87ccee668cc3372137beccf962033e54fb9d4535c9aa41a7",
+    "src/tasks/cohort_studies/frozen_db.py": "4948a6c513d24238a3cf296b870ac7959a56e64c7f3002a570b661e20c227f63",
+    "src/tasks/cohort_studies/schedules/default.json": "9afb2b7c569b8fea700073fb8484b57b2ce86d1b94c401e0ee8e7db3e45996f7",
+    "src/tasks/cohort_studies/scoring_cohorts.py": "b696f9f60d5337d0e95c962ef752c76938310cfa3a5741554df4120d9c0ea80c",
+    "src/tasks/cohort_studies/study_configs.py": "aa3c2ccfea5da4ca4606b5c83cd72e26243b0f7b1d33b78598e06cf80008d4de"
+  },
+  "instances": [
+    {
+      "instance_index": 0,
+      "variant_id": "herald_suburban",
+      "split_index": 1,
+      "db_seed": 9457520048511367651,
+      "patient_ids_sha256": "4ee64971f1542f20b7045283ba1e4440812b94c1e86c37f5aab9cd79ae7c722c",
+      "db_sha256": "35c6bc8b5086829aff2f51770163af2b940dd957ad42d41b01df8e8d747102d9"
+    },
+    {
+      "instance_index": 1,
+      "variant_id": "herald_rural",
+      "split_index": 1,
+      "db_seed": 8029523260900615174,
+      "patient_ids_sha256": "4f248d6049908525693280723e862ac1901dbba00e2e0d5a1dd5c62772ff56d8",
+      "db_sha256": "5818e8359396c01073313cfbaac6d9d72c96ebb85a2e7f72bac3ec235a814413"
+    },
+    {
+      "instance_index": 2,
+      "variant_id": "herald_suburban_s2",
+      "split_index": 2,
+      "db_seed": 13326141327908295806,
+      "patient_ids_sha256": "fa4336cce57b301b718355398e1b994bd5080f27109b085249c85b29009dbb75",
+      "db_sha256": "219ef2e6508893a2a6d7c6a8fe5cb955b86fdf9806dc4cc08d53d9bb66258550"
+    },
+    {
+      "instance_index": 3,
+      "variant_id": "herald_rural_s2",
+      "split_index": 2,
+      "db_seed": 9589215540786694944,
+      "patient_ids_sha256": "c0942ddf631927b03463073dbead6fbbdc6d280c9a5cd43d2b3a710ff8f35c53",
+      "db_sha256": "3647142d296cdbd726e01bd1945f61b0afe616e85eefc55ede62d752928a348c"
+    },
+    {
+      "instance_index": 4,
+      "variant_id": "meridian_suburban",
+      "split_index": 1,
+      "db_seed": 17510005065604885437,
+      "patient_ids_sha256": "e4288f555f6301668932b9b7ac4901df82e913a840eef17c0367f93aee877703",
+      "db_sha256": "6744d74274f8dad48c59482ecf152fdfbb3044fef00b13aa22f2249b4e6ae38e"
+    },
+    {
+      "instance_index": 5,
+      "variant_id": "meridian_rural",
+      "split_index": 1,
+      "db_seed": 5253704113315221847,
+      "patient_ids_sha256": "cf28a4fb96bf6fc81d5a7bbe2130015b282396f29aa676b9d4608ebfbd018e6f",
+      "db_sha256": "d038074bcc46a69a0b8795367b2b87c5c40b9f1917a10de085158722cc224943"
+    },
+    {
+      "instance_index": 6,
+      "variant_id": "meridian_suburban_s2",
+      "split_index": 2,
+      "db_seed": 1495104328566359,
+      "patient_ids_sha256": "d940cdfcde7b70b98d06821d226701a66a557eea9bb0e1b1826a9fc45091254c",
+      "db_sha256": "6b00afa5d00b3684e51e097388b0c5ff60a3a9f293af92c6effc64a5edd6d5ff"
+    },
+    {
+      "instance_index": 7,
+      "variant_id": "meridian_rural_s2",
+      "split_index": 2,
+      "db_seed": 3705656438322293584,
+      "patient_ids_sha256": "5ec6a2c0399b3c1e22a62f0908889a0eeca370820ce4a99fbe9ab017206fe9b0",
+      "db_sha256": "79ae4edba996054414f33f7c16b9f82cf18775f1cb172ec58f4d4a17bf0ff7e8"
+    },
+    {
+      "instance_index": 8,
+      "variant_id": "mosaic_urban",
+      "split_index": 1,
+      "db_seed": 12456941478619132435,
+      "patient_ids_sha256": "78e510884358077ee2fb6fc22488ad327b8d4998b5529c8a5f3e5827991b3365",
+      "db_sha256": "7381cdd6c6f69207e831a02711535ab4526a3db3f0be0b4a359f26372c458cfa"
+    },
+    {
+      "instance_index": 9,
+      "variant_id": "mosaic_suburban",
+      "split_index": 1,
+      "db_seed": 4758294293333883185,
+      "patient_ids_sha256": "a4ec21ba709724f6f7e5c070f70644f18db3e98f8c5343e250dbe5278fa69da3",
+      "db_sha256": "1d1a234c269b432bd9411afe6a07d74298b4a48af3ebe05d013ac39ef2be1b25"
+    },
+    {
+      "instance_index": 10,
+      "variant_id": "mosaic_urban_s2",
+      "split_index": 2,
+      "db_seed": 11688584372643980424,
+      "patient_ids_sha256": "3ccc884246778aa27d2d331bfd2ce7ce17c4300ccba5e2d6d7f8bec5580e89f5",
+      "db_sha256": "ac145953a8d022b75687a7018d3ee9c2216c3454b6443b96e4722dedd2490c8c"
+    },
+    {
+      "instance_index": 11,
+      "variant_id": "mosaic_suburban_s2",
+      "split_index": 2,
+      "db_seed": 4224751400528863989,
+      "patient_ids_sha256": "69561b733884c45858791e856ced191ecc19af4e2a6e3a5149d9251c350d121a",
+      "db_sha256": "73a6dfbd1ed7712b66c54fc6ff10440206150eb024c153b4d89c768621dc6dd8"
+    },
+    {
+      "instance_index": 12,
+      "variant_id": "forge_industrial",
+      "split_index": 1,
+      "db_seed": 6098733462154572273,
+      "patient_ids_sha256": "4c745d0d3fcdf79c00fd017963a9eb4fbcc80301582c1d8a1d28615d9b0895f9",
+      "db_sha256": "0854874fb4a555f2548c8d2f99aa7eb30b7bd2656eaedde637e67c886dc740e7"
+    },
+    {
+      "instance_index": 13,
+      "variant_id": "forge_urban",
+      "split_index": 1,
+      "db_seed": 2935740182225777855,
+      "patient_ids_sha256": "c456fd62ab218eba8d53c9d3ecddb1cd6b7a5db2a0a46d05c437f9b0c78888d8",
+      "db_sha256": "c4826c587551cd4b11c0a9d3a0560b273f2d78eac9c37da7f6eee79d512d3ab1"
+    },
+    {
+      "instance_index": 14,
+      "variant_id": "forge_industrial_s2",
+      "split_index": 2,
+      "db_seed": 5604815157245826305,
+      "patient_ids_sha256": "a632f46756c23f221170f1549905d6cdc47303fadf267e7d8fda89d8b085f589",
+      "db_sha256": "c396a114b7ba63fd7246ce4e4b3cd237a1034e264d2b6b05206c67be239db050"
+    },
+    {
+      "instance_index": 15,
+      "variant_id": "forge_urban_s2",
+      "split_index": 2,
+      "db_seed": 11598546811049293930,
+      "patient_ids_sha256": "def9939299f7a1e14c211ff0bf11d3a95cfda536940d7244421a665234ead260",
+      "db_sha256": "f5dc2dd403d8965e479f28ecc33da3fde03cf9fed64da19b59390f9b51a2edcf"
+    },
+    {
+      "instance_index": 16,
+      "variant_id": "cadence_urban",
+      "split_index": 1,
+      "db_seed": 17859360968485567359,
+      "patient_ids_sha256": "8e75bd477dbc6e6074199d798e9bf14ffac11da868c7fa1612e77c31a5cc96c3",
+      "db_sha256": "a8d6c3bf8f930b2fb66cc299b743bae35b61d1fc8a6c18a705fa1ab91e99b9db"
+    },
+    {
+      "instance_index": 17,
+      "variant_id": "cadence_industrial",
+      "split_index": 1,
+      "db_seed": 15362945556664599498,
+      "patient_ids_sha256": "b2ed802d5e40196c4352a7af4baf0b1586937b4688400742d15ec10086cd7ed7",
+      "db_sha256": "f841db7d81b4666ec1c132a86c54dfd7dcc338198b79eda04e60be84a148d5b2"
+    },
+    {
+      "instance_index": 18,
+      "variant_id": "cadence_urban_s2",
+      "split_index": 2,
+      "db_seed": 10929591236845362344,
+      "patient_ids_sha256": "b85c4f8db282d1f97d1785da2be08f012764220803e02afab20c8896135d7050",
+      "db_sha256": "e645c56e06d4792603f603892fe2b8b4cc9a411ec3aded7d30c8cb559e124769"
+    },
+    {
+      "instance_index": 19,
+      "variant_id": "cadence_industrial_s2",
+      "split_index": 2,
+      "db_seed": 14898931491819190441,
+      "patient_ids_sha256": "97988f09d18d6feb9f34763265405895be092a976498699335c80d499bb39b6b",
+      "db_sha256": "e11ad8654eb73da3ce21e661c205fb84beb1a433415064eca9b40f2ca312ef4f"
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "cohort_definitions.json",
+      "sha256": "8ff45b3d1cf1afe49b108f8b693a055f2633673a87b5c5768a6692d79e1d8cff",
+      "size_bytes": 9860
+    },
+    {
+      "path": "dbs/cadence_industrial.db",
+      "sha256": "f841db7d81b4666ec1c132a86c54dfd7dcc338198b79eda04e60be84a148d5b2",
+      "size_bytes": 36864
+    },
+    {
+      "path": "dbs/cadence_industrial_s2.db",
+      "sha256": "e11ad8654eb73da3ce21e661c205fb84beb1a433415064eca9b40f2ca312ef4f",
+      "size_bytes": 36864
+    },
+    {
+      "path": "dbs/cadence_urban.db",
+      "sha256": "a8d6c3bf8f930b2fb66cc299b743bae35b61d1fc8a6c18a705fa1ab91e99b9db",
+      "size_bytes": 49152
+    },
+    {
+      "path": "dbs/cadence_urban_s2.db",
+      "sha256": "e645c56e06d4792603f603892fe2b8b4cc9a411ec3aded7d30c8cb559e124769",
+      "size_bytes": 49152
+    },
+    {
+      "path": "dbs/forge_industrial.db",
+      "sha256": "0854874fb4a555f2548c8d2f99aa7eb30b7bd2656eaedde637e67c886dc740e7",
+      "size_bytes": 49152
+    },
+    {
+      "path": "dbs/forge_industrial_s2.db",
+      "sha256": "c396a114b7ba63fd7246ce4e4b3cd237a1034e264d2b6b05206c67be239db050",
+      "size_bytes": 49152
+    },
+    {
+      "path": "dbs/forge_urban.db",
+      "sha256": "c4826c587551cd4b11c0a9d3a0560b273f2d78eac9c37da7f6eee79d512d3ab1",
+      "size_bytes": 40960
+    },
+    {
+      "path": "dbs/forge_urban_s2.db",
+      "sha256": "f5dc2dd403d8965e479f28ecc33da3fde03cf9fed64da19b59390f9b51a2edcf",
+      "size_bytes": 40960
+    },
+    {
+      "path": "dbs/herald_rural.db",
+      "sha256": "5818e8359396c01073313cfbaac6d9d72c96ebb85a2e7f72bac3ec235a814413",
+      "size_bytes": 40960
+    },
+    {
+      "path": "dbs/herald_rural_s2.db",
+      "sha256": "3647142d296cdbd726e01bd1945f61b0afe616e85eefc55ede62d752928a348c",
+      "size_bytes": 40960
+    },
+    {
+      "path": "dbs/herald_suburban.db",
+      "sha256": "35c6bc8b5086829aff2f51770163af2b940dd957ad42d41b01df8e8d747102d9",
+      "size_bytes": 36864
+    },
+    {
+      "path": "dbs/herald_suburban_s2.db",
+      "sha256": "219ef2e6508893a2a6d7c6a8fe5cb955b86fdf9806dc4cc08d53d9bb66258550",
+      "size_bytes": 36864
+    },
+    {
+      "path": "dbs/meridian_rural.db",
+      "sha256": "d038074bcc46a69a0b8795367b2b87c5c40b9f1917a10de085158722cc224943",
+      "size_bytes": 45056
+    },
+    {
+      "path": "dbs/meridian_rural_s2.db",
+      "sha256": "79ae4edba996054414f33f7c16b9f82cf18775f1cb172ec58f4d4a17bf0ff7e8",
+      "size_bytes": 45056
+    },
+    {
+      "path": "dbs/meridian_suburban.db",
+      "sha256": "6744d74274f8dad48c59482ecf152fdfbb3044fef00b13aa22f2249b4e6ae38e",
+      "size_bytes": 45056
+    },
+    {
+      "path": "dbs/meridian_suburban_s2.db",
+      "sha256": "6b00afa5d00b3684e51e097388b0c5ff60a3a9f293af92c6effc64a5edd6d5ff",
+      "size_bytes": 45056
+    },
+    {
+      "path": "dbs/mosaic_suburban.db",
+      "sha256": "1d1a234c269b432bd9411afe6a07d74298b4a48af3ebe05d013ac39ef2be1b25",
+      "size_bytes": 40960
+    },
+    {
+      "path": "dbs/mosaic_suburban_s2.db",
+      "sha256": "73a6dfbd1ed7712b66c54fc6ff10440206150eb024c153b4d89c768621dc6dd8",
+      "size_bytes": 45056
+    },
+    {
+      "path": "dbs/mosaic_urban.db",
+      "sha256": "7381cdd6c6f69207e831a02711535ab4526a3db3f0be0b4a359f26372c458cfa",
+      "size_bytes": 36864
+    },
+    {
+      "path": "dbs/mosaic_urban_s2.db",
+      "sha256": "ac145953a8d022b75687a7018d3ee9c2216c3454b6443b96e4722dedd2490c8c",
+      "size_bytes": 36864
+    },
+    {
+      "path": "ground_truth.json",
+      "sha256": "c4dfe5dcf4f2f980029aa5238133c208d4cad9910f6abc9c3c61941659e18a35",
+      "size_bytes": 6005
+    },
+    {
+      "path": "instance_references.json",
+      "sha256": "40275060363e75834b43e203cbc6cd672817716995e590b2de607252dfd0baf6",
+      "size_bytes": 2356
+    },
+    {
+      "path": "metadata.json",
+      "sha256": "2d6c784099fb2285f22c6a587213e0cff047fcdce0df4f97ed5d1f326e370c1a",
+      "size_bytes": 6594
+    }
+  ],
+  "corpus_sha256": "f5adba01d7ef5d124fb46a77f3b5da8adecec12548e3ee850947f594141243cf"
+}

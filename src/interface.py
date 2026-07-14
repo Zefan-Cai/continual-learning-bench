@@ -690,7 +690,11 @@ def run_task(
     reset_between_instances: bool = False,
     phase: str = "rollout",
     initial_query: Optional[Query] = None,
+    before_respond: Optional[Callable[[int, Query], None]] = None,
     before_observe: Optional[
+        Callable[[int, Query, Response, TaskStepResult], None]
+    ] = None,
+    after_observe: Optional[
         Callable[[int, Query, Response, TaskStepResult], None]
     ] = None,
 ) -> TaskResult:
@@ -708,5 +712,7 @@ def run_task(
         reset_between_instances=reset_between_instances,
         phase=phase,
         initial_query=initial_query,
+        before_respond=before_respond,
         before_observe=before_observe,
+        after_observe=after_observe,
     )

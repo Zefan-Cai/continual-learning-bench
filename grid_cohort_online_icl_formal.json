@@ -1,0 +1,512 @@
+{
+  "schema_version": 1,
+  "protocol": "cohort_reward_aware_online_icl_v1",
+  "base_causal_implementation_commit": "1caf142f6ce611da8da8691d4c336388a4c3c4b3",
+  "preregistration": {
+    "path": "COHORT_MATCHED_ICL_PREREG_V1.md",
+    "sha256": "e5cfb706d00b5897205afe3fdad457442515d0433509244b30d3184adf0b212e"
+  },
+  "paired_causal_grid": {
+    "path": "grid_cohort_causal_formal.json",
+    "sha256": "c36eb230f5bb39b8ef93296eb772da481427a7f176a79581f8dfa7635055c98d"
+  },
+  "kind": "formal",
+  "decision_scope": "internal_screen",
+  "publication_grade": false,
+  "datasets": {
+    "adaptation": {
+      "path": "data/cohort_studies/causal_adapt_2026071411",
+      "schedule": "causal_adapt_2026071411",
+      "seed": 2026071411,
+      "corpus_sha256": "31f94d0130573e347ef8276a44c8d71c7b2159b881334798a7b73cd084ae9d9a",
+      "schedule_sha256": "a471a2e1dca55317dda9d6858b2103f3cd51539d9cfa081836a338058eed44f5"
+    },
+    "heldout": {
+      "path": "data/cohort_studies/causal_eval_2026071412",
+      "schedule": "causal_eval_2026071412",
+      "seed": 2026071412,
+      "corpus_sha256": "a5c56f2c408b0d909a31cbfad490a95d5facd583eb8d3cbb3190aea4c39e0b80",
+      "schedule_sha256": "81dde8ec92fe18af6410fbf38ff9cebd52fc298d534d9fb5107df3da5afe09ea"
+    }
+  },
+  "cells": [
+    {
+      "cfg_id": "cohort_online_icl_formal_seed2026071401_n20",
+      "mode": "online_icl_eval",
+      "algorithm": "cohort_reward_aware_online_icl_v1",
+      "arm": "online_icl",
+      "task_name": "cohort_studies",
+      "system_name": "qwen_local",
+      "run_seed": 2026071401,
+      "expected_num_instances": 20,
+      "adaptation_task_params": {
+        "schedule": "causal_adapt_2026071411",
+        "dataset_path": "data/cohort_studies/causal_adapt_2026071411",
+        "num_instances": 20,
+        "action_budget": 20,
+        "seed": 2026071411,
+        "repeat_instructions": true
+      },
+      "adaptation_task_params_sha256": "d5219a98e197e9101356ff6fde76cbf8256ab560c7bf7cacfc6d5e083881af81",
+      "heldout_task_params": {
+        "schedule": "causal_eval_2026071412",
+        "dataset_path": "data/cohort_studies/causal_eval_2026071412",
+        "num_instances": 20,
+        "action_budget": 20,
+        "seed": 2026071412,
+        "repeat_instructions": true
+      },
+      "heldout_task_params_sha256": "0db6ba66e4df72a45e8a99fa7c6a0d90414509b48f2807fecc011480c55ffaeb",
+      "system_params": {
+        "model_path": "/sensei-fs/users/zcai/models/Qwen3-4B",
+        "method": "icl",
+        "context_policy": "full",
+        "adaptation_context_policy": "full",
+        "max_context_tokens": 32768,
+        "head_tokens": 4096,
+        "tail_tokens": 4096,
+        "max_new_tokens": 8192,
+        "action_max_new_tokens": 4096,
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "parse_retries": 2,
+        "system_prompt": "",
+        "trust_remote_code": true,
+        "inject_env_reward": true,
+        "ttt_steps": 0,
+        "ttt_lr": 0.0,
+        "reward_pg_steps": 0,
+        "reward_pg_lr": 0.0,
+        "history_ttt": false,
+        "best_of_n": 1,
+        "distill_provider": "off"
+      },
+      "system_params_sha256": "307ae6f578cf8112a1c294f1e75c6f39da535a2432672e42b4d8b5ead74e6e84",
+      "execution_contract": {
+        "phase_order": [
+          "verify_protocol_seal",
+          "revalidate_paired_causal_gate",
+          "online_adaptation",
+          "seal_context",
+          "heldout_evaluation"
+        ],
+        "causal_prerequisite": {
+          "bind_exact_gate_and_provenance_sha256": true,
+          "recompute_gate_from_registered_raw_artifacts": true,
+          "require_empty_errors_and_pass": true,
+          "shared_environment_model_tokenizer_required": true
+        },
+        "protocol_seal": {
+          "atomic_no_overwrite_required": true,
+          "binds_both_smoke_and_formal_grid_digests": true,
+          "binds_exact_runtime_provenance": true,
+          "created_before_first_icl_outcome": true,
+          "same_artifact_and_source_commit_for_smoke_and_formal": true
+        },
+        "online_adaptation": {
+          "consume_own_trajectory_only": true,
+          "candidate_sampler_forbidden": true,
+          "extra_model_calls_per_action": 0,
+          "terminal_reward_visible_only_after_report_commit_and_score": true,
+          "terminal_reward_template": "ENV_REWARD (score of your previous answer, higher is better): {reward:.4f}"
+        },
+        "seal_context": {
+          "canonical_json": {
+            "allow_nan": false,
+            "encoding": "utf-8",
+            "separators": [
+              ",",
+              ":"
+            ],
+            "sort_keys": true
+          },
+          "one_way_feedback_gate_required": true,
+          "quiescent_state_required": true,
+          "snapshot_digest_independently_recomputed": true,
+          "snapshot_state_bound_to_adaptation_trace": true,
+          "message_and_token_inventory_independently_recomputed": true,
+          "snapshot_protocol": "qwen_local_icl_context_snapshot_v1",
+          "write_snapshot_and_inventory_before_heldout": true
+        },
+        "heldout_evaluation": {
+          "allow_within_condition_public_tool_context": true,
+          "forbidden_sensitive_fields": [
+            "cohort_gt",
+            "env_feedback_reward",
+            "ref_survival",
+            "terminal_content",
+            "terminal_reward"
+          ],
+          "initial_snapshot_digest_identical_for_every_condition": true,
+          "restore_snapshot_after_every_completed_condition_including_last": true,
+          "terminal_query_feedback_ingestion_forbidden": true,
+          "terminal_observe_content_ingestion_forbidden": true
+        },
+        "integrity": {
+          "adapter_creation_forbidden": true,
+          "candidate_sample_count_required": 0,
+          "distiller_creation_forbidden": true,
+          "immutable_artifacts_atomic_no_overwrite": true,
+          "model_state_hash_unchanged_required": true,
+          "model_state_hash_covers_parameters_and_persistent_buffers": true,
+          "optimizer_creation_forbidden": true,
+          "parameter_update_count_required": 0,
+          "real_unique_non_synthetic_non_timeout_conditions_required": true,
+          "smoke_dgp_overlap_with_internal_screen_forbidden": true,
+          "smoke_user_visible_efficacy_fields_forbidden": true,
+          "validated_report_binds_every_raw_artifact_sha256": true
+        },
+        "compute_accounting": {
+          "metrics": [
+            "generation_calls",
+            "input_tokens",
+            "output_tokens",
+            "candidate_samples",
+            "optimizer_forward_calls",
+            "optimizer_backward_calls",
+            "optimizer_steps",
+            "wall_seconds",
+            "gpu_seconds",
+            "peak_allocated_gpu_memory",
+            "retries",
+            "repairs",
+            "failures"
+          ],
+          "phases": [
+            "model_initialization",
+            "online_adaptation",
+            "snapshot_seal",
+            "heldout_evaluation"
+          ]
+        }
+      },
+      "execution_contract_sha256": "a335c4d03a71d0f919aa417e21cef55839bf44a2014180f5cef3c5c3154abaec",
+      "adaptation_trace_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071401_n20.adaptation.trace.json",
+      "cell_manifest_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071401_n20.manifest.json",
+      "context_inventory_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071401_n20.context_inventory.json",
+      "heldout_trace_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071401_n20.heldout.trace.json",
+      "restoration_audit_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071401_n20.restoration_audit.json",
+      "snapshot_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071401_n20.sealed_snapshot.json",
+      "cell_config_sha256": "2c0163a48174c5a5bf36820394688fba66e6eb6db5808547f9c27dd7fc136ba4"
+    },
+    {
+      "cfg_id": "cohort_online_icl_formal_seed2026071402_n20",
+      "mode": "online_icl_eval",
+      "algorithm": "cohort_reward_aware_online_icl_v1",
+      "arm": "online_icl",
+      "task_name": "cohort_studies",
+      "system_name": "qwen_local",
+      "run_seed": 2026071402,
+      "expected_num_instances": 20,
+      "adaptation_task_params": {
+        "schedule": "causal_adapt_2026071411",
+        "dataset_path": "data/cohort_studies/causal_adapt_2026071411",
+        "num_instances": 20,
+        "action_budget": 20,
+        "seed": 2026071411,
+        "repeat_instructions": true
+      },
+      "adaptation_task_params_sha256": "d5219a98e197e9101356ff6fde76cbf8256ab560c7bf7cacfc6d5e083881af81",
+      "heldout_task_params": {
+        "schedule": "causal_eval_2026071412",
+        "dataset_path": "data/cohort_studies/causal_eval_2026071412",
+        "num_instances": 20,
+        "action_budget": 20,
+        "seed": 2026071412,
+        "repeat_instructions": true
+      },
+      "heldout_task_params_sha256": "0db6ba66e4df72a45e8a99fa7c6a0d90414509b48f2807fecc011480c55ffaeb",
+      "system_params": {
+        "model_path": "/sensei-fs/users/zcai/models/Qwen3-4B",
+        "method": "icl",
+        "context_policy": "full",
+        "adaptation_context_policy": "full",
+        "max_context_tokens": 32768,
+        "head_tokens": 4096,
+        "tail_tokens": 4096,
+        "max_new_tokens": 8192,
+        "action_max_new_tokens": 4096,
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "parse_retries": 2,
+        "system_prompt": "",
+        "trust_remote_code": true,
+        "inject_env_reward": true,
+        "ttt_steps": 0,
+        "ttt_lr": 0.0,
+        "reward_pg_steps": 0,
+        "reward_pg_lr": 0.0,
+        "history_ttt": false,
+        "best_of_n": 1,
+        "distill_provider": "off"
+      },
+      "system_params_sha256": "307ae6f578cf8112a1c294f1e75c6f39da535a2432672e42b4d8b5ead74e6e84",
+      "execution_contract": {
+        "phase_order": [
+          "verify_protocol_seal",
+          "revalidate_paired_causal_gate",
+          "online_adaptation",
+          "seal_context",
+          "heldout_evaluation"
+        ],
+        "causal_prerequisite": {
+          "bind_exact_gate_and_provenance_sha256": true,
+          "recompute_gate_from_registered_raw_artifacts": true,
+          "require_empty_errors_and_pass": true,
+          "shared_environment_model_tokenizer_required": true
+        },
+        "protocol_seal": {
+          "atomic_no_overwrite_required": true,
+          "binds_both_smoke_and_formal_grid_digests": true,
+          "binds_exact_runtime_provenance": true,
+          "created_before_first_icl_outcome": true,
+          "same_artifact_and_source_commit_for_smoke_and_formal": true
+        },
+        "online_adaptation": {
+          "consume_own_trajectory_only": true,
+          "candidate_sampler_forbidden": true,
+          "extra_model_calls_per_action": 0,
+          "terminal_reward_visible_only_after_report_commit_and_score": true,
+          "terminal_reward_template": "ENV_REWARD (score of your previous answer, higher is better): {reward:.4f}"
+        },
+        "seal_context": {
+          "canonical_json": {
+            "allow_nan": false,
+            "encoding": "utf-8",
+            "separators": [
+              ",",
+              ":"
+            ],
+            "sort_keys": true
+          },
+          "one_way_feedback_gate_required": true,
+          "quiescent_state_required": true,
+          "snapshot_digest_independently_recomputed": true,
+          "snapshot_state_bound_to_adaptation_trace": true,
+          "message_and_token_inventory_independently_recomputed": true,
+          "snapshot_protocol": "qwen_local_icl_context_snapshot_v1",
+          "write_snapshot_and_inventory_before_heldout": true
+        },
+        "heldout_evaluation": {
+          "allow_within_condition_public_tool_context": true,
+          "forbidden_sensitive_fields": [
+            "cohort_gt",
+            "env_feedback_reward",
+            "ref_survival",
+            "terminal_content",
+            "terminal_reward"
+          ],
+          "initial_snapshot_digest_identical_for_every_condition": true,
+          "restore_snapshot_after_every_completed_condition_including_last": true,
+          "terminal_query_feedback_ingestion_forbidden": true,
+          "terminal_observe_content_ingestion_forbidden": true
+        },
+        "integrity": {
+          "adapter_creation_forbidden": true,
+          "candidate_sample_count_required": 0,
+          "distiller_creation_forbidden": true,
+          "immutable_artifacts_atomic_no_overwrite": true,
+          "model_state_hash_unchanged_required": true,
+          "model_state_hash_covers_parameters_and_persistent_buffers": true,
+          "optimizer_creation_forbidden": true,
+          "parameter_update_count_required": 0,
+          "real_unique_non_synthetic_non_timeout_conditions_required": true,
+          "smoke_dgp_overlap_with_internal_screen_forbidden": true,
+          "smoke_user_visible_efficacy_fields_forbidden": true,
+          "validated_report_binds_every_raw_artifact_sha256": true
+        },
+        "compute_accounting": {
+          "metrics": [
+            "generation_calls",
+            "input_tokens",
+            "output_tokens",
+            "candidate_samples",
+            "optimizer_forward_calls",
+            "optimizer_backward_calls",
+            "optimizer_steps",
+            "wall_seconds",
+            "gpu_seconds",
+            "peak_allocated_gpu_memory",
+            "retries",
+            "repairs",
+            "failures"
+          ],
+          "phases": [
+            "model_initialization",
+            "online_adaptation",
+            "snapshot_seal",
+            "heldout_evaluation"
+          ]
+        }
+      },
+      "execution_contract_sha256": "a335c4d03a71d0f919aa417e21cef55839bf44a2014180f5cef3c5c3154abaec",
+      "adaptation_trace_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071402_n20.adaptation.trace.json",
+      "cell_manifest_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071402_n20.manifest.json",
+      "context_inventory_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071402_n20.context_inventory.json",
+      "heldout_trace_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071402_n20.heldout.trace.json",
+      "restoration_audit_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071402_n20.restoration_audit.json",
+      "snapshot_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071402_n20.sealed_snapshot.json",
+      "cell_config_sha256": "9cea6ecc203dbee20093eccb2f35faeb96e35e31c62a1b3486d4aec9c62ed52b"
+    },
+    {
+      "cfg_id": "cohort_online_icl_formal_seed2026071403_n20",
+      "mode": "online_icl_eval",
+      "algorithm": "cohort_reward_aware_online_icl_v1",
+      "arm": "online_icl",
+      "task_name": "cohort_studies",
+      "system_name": "qwen_local",
+      "run_seed": 2026071403,
+      "expected_num_instances": 20,
+      "adaptation_task_params": {
+        "schedule": "causal_adapt_2026071411",
+        "dataset_path": "data/cohort_studies/causal_adapt_2026071411",
+        "num_instances": 20,
+        "action_budget": 20,
+        "seed": 2026071411,
+        "repeat_instructions": true
+      },
+      "adaptation_task_params_sha256": "d5219a98e197e9101356ff6fde76cbf8256ab560c7bf7cacfc6d5e083881af81",
+      "heldout_task_params": {
+        "schedule": "causal_eval_2026071412",
+        "dataset_path": "data/cohort_studies/causal_eval_2026071412",
+        "num_instances": 20,
+        "action_budget": 20,
+        "seed": 2026071412,
+        "repeat_instructions": true
+      },
+      "heldout_task_params_sha256": "0db6ba66e4df72a45e8a99fa7c6a0d90414509b48f2807fecc011480c55ffaeb",
+      "system_params": {
+        "model_path": "/sensei-fs/users/zcai/models/Qwen3-4B",
+        "method": "icl",
+        "context_policy": "full",
+        "adaptation_context_policy": "full",
+        "max_context_tokens": 32768,
+        "head_tokens": 4096,
+        "tail_tokens": 4096,
+        "max_new_tokens": 8192,
+        "action_max_new_tokens": 4096,
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "parse_retries": 2,
+        "system_prompt": "",
+        "trust_remote_code": true,
+        "inject_env_reward": true,
+        "ttt_steps": 0,
+        "ttt_lr": 0.0,
+        "reward_pg_steps": 0,
+        "reward_pg_lr": 0.0,
+        "history_ttt": false,
+        "best_of_n": 1,
+        "distill_provider": "off"
+      },
+      "system_params_sha256": "307ae6f578cf8112a1c294f1e75c6f39da535a2432672e42b4d8b5ead74e6e84",
+      "execution_contract": {
+        "phase_order": [
+          "verify_protocol_seal",
+          "revalidate_paired_causal_gate",
+          "online_adaptation",
+          "seal_context",
+          "heldout_evaluation"
+        ],
+        "causal_prerequisite": {
+          "bind_exact_gate_and_provenance_sha256": true,
+          "recompute_gate_from_registered_raw_artifacts": true,
+          "require_empty_errors_and_pass": true,
+          "shared_environment_model_tokenizer_required": true
+        },
+        "protocol_seal": {
+          "atomic_no_overwrite_required": true,
+          "binds_both_smoke_and_formal_grid_digests": true,
+          "binds_exact_runtime_provenance": true,
+          "created_before_first_icl_outcome": true,
+          "same_artifact_and_source_commit_for_smoke_and_formal": true
+        },
+        "online_adaptation": {
+          "consume_own_trajectory_only": true,
+          "candidate_sampler_forbidden": true,
+          "extra_model_calls_per_action": 0,
+          "terminal_reward_visible_only_after_report_commit_and_score": true,
+          "terminal_reward_template": "ENV_REWARD (score of your previous answer, higher is better): {reward:.4f}"
+        },
+        "seal_context": {
+          "canonical_json": {
+            "allow_nan": false,
+            "encoding": "utf-8",
+            "separators": [
+              ",",
+              ":"
+            ],
+            "sort_keys": true
+          },
+          "one_way_feedback_gate_required": true,
+          "quiescent_state_required": true,
+          "snapshot_digest_independently_recomputed": true,
+          "snapshot_state_bound_to_adaptation_trace": true,
+          "message_and_token_inventory_independently_recomputed": true,
+          "snapshot_protocol": "qwen_local_icl_context_snapshot_v1",
+          "write_snapshot_and_inventory_before_heldout": true
+        },
+        "heldout_evaluation": {
+          "allow_within_condition_public_tool_context": true,
+          "forbidden_sensitive_fields": [
+            "cohort_gt",
+            "env_feedback_reward",
+            "ref_survival",
+            "terminal_content",
+            "terminal_reward"
+          ],
+          "initial_snapshot_digest_identical_for_every_condition": true,
+          "restore_snapshot_after_every_completed_condition_including_last": true,
+          "terminal_query_feedback_ingestion_forbidden": true,
+          "terminal_observe_content_ingestion_forbidden": true
+        },
+        "integrity": {
+          "adapter_creation_forbidden": true,
+          "candidate_sample_count_required": 0,
+          "distiller_creation_forbidden": true,
+          "immutable_artifacts_atomic_no_overwrite": true,
+          "model_state_hash_unchanged_required": true,
+          "model_state_hash_covers_parameters_and_persistent_buffers": true,
+          "optimizer_creation_forbidden": true,
+          "parameter_update_count_required": 0,
+          "real_unique_non_synthetic_non_timeout_conditions_required": true,
+          "smoke_dgp_overlap_with_internal_screen_forbidden": true,
+          "smoke_user_visible_efficacy_fields_forbidden": true,
+          "validated_report_binds_every_raw_artifact_sha256": true
+        },
+        "compute_accounting": {
+          "metrics": [
+            "generation_calls",
+            "input_tokens",
+            "output_tokens",
+            "candidate_samples",
+            "optimizer_forward_calls",
+            "optimizer_backward_calls",
+            "optimizer_steps",
+            "wall_seconds",
+            "gpu_seconds",
+            "peak_allocated_gpu_memory",
+            "retries",
+            "repairs",
+            "failures"
+          ],
+          "phases": [
+            "model_initialization",
+            "online_adaptation",
+            "snapshot_seal",
+            "heldout_evaluation"
+          ]
+        }
+      },
+      "execution_contract_sha256": "a335c4d03a71d0f919aa417e21cef55839bf44a2014180f5cef3c5c3154abaec",
+      "adaptation_trace_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071403_n20.adaptation.trace.json",
+      "cell_manifest_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071403_n20.manifest.json",
+      "context_inventory_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071403_n20.context_inventory.json",
+      "heldout_trace_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071403_n20.heldout.trace.json",
+      "restoration_audit_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071403_n20.restoration_audit.json",
+      "snapshot_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071403_n20.sealed_snapshot.json",
+      "cell_config_sha256": "84c0629767256bfb7adaf3902d0ddc63c20ed6d1ad833aac8a77222f987a82d4"
+    }
+  ],
+  "grid_sha256": "8a07db10ae670817d15ac510d93f99aa77bc2f847b51a2e6e7f4e3c8bc46def4"
+}

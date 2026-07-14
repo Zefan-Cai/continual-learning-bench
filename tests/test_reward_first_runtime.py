@@ -387,9 +387,7 @@ class RewardFirstRuntimeTests(unittest.TestCase):
             step_result: TaskStepResult,
         ) -> None:
             del step, response
-            reward = float(
-                step_result.observation.metadata["env_feedback_reward"]
-            )
+            reward = float(step_result.observation.metadata["env_feedback_reward"])
             events.append(("hook", str(query.instance_id), reward))
 
         def observe(observation: Observation, next_query: Query | None) -> None:
@@ -417,6 +415,69 @@ class RewardFirstRuntimeTests(unittest.TestCase):
                 ("observe", "instance-0", 1.0),
                 ("hook", "instance-1", 2.0),
                 ("observe", "instance-1", 2.0),
+            ],
+        )
+
+    def test_after_observe_hook_runs_before_trace_serialization(self):
+        task = TwoInstanceTask()
+        system = CountingSystem()
+        events: list[tuple[str, str]] = []
+
+        original_observe = system.observe
+
+        def observe(observation: Observation, next_query: Query | None) -> None:
+            original_observe(observation, next_query)
+            events.append(
+                ("observe", str(observation.metadata["env_feedback_instance_id"]))
+            )
+
+        def after(
+            step: int,
+            query: Query,
+            response: Response,
+            step_result: TaskStepResult,
+        ) -> None:
+            del step, response
+            self.assertTrue(step_result.observation.instance_complete)
+            events.append(("after", str(query.instance_id)))
+
+        system.observe = observe  # type: ignore[method-assign]
+        run_task(task, system, show_progress=False, after_observe=after)
+
+        self.assertEqual(
+            events,
+            [
+                ("observe", "instance-0"),
+                ("after", "instance-0"),
+                ("observe", "instance-1"),
+                ("after", "instance-1"),
+            ],
+        )
+
+    def test_before_respond_hook_sees_each_query_before_system(self):
+        task = TwoInstanceTask()
+        system = CountingSystem()
+        events: list[tuple[str, str]] = []
+        original_respond = system.respond
+
+        def before(step: int, query: Query) -> None:
+            del step
+            events.append(("before", str(query.instance_id)))
+
+        def respond(query: Query) -> Response:
+            events.append(("respond", str(query.instance_id)))
+            return original_respond(query)
+
+        system.respond = respond  # type: ignore[method-assign]
+        run_task(task, system, show_progress=False, before_respond=before)
+
+        self.assertEqual(
+            events,
+            [
+                ("before", "instance-0"),
+                ("respond", "instance-0"),
+                ("before", "instance-1"),
+                ("respond", "instance-1"),
             ],
         )
 

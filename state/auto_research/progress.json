@@ -1,18 +1,30 @@
 {
-  "active_probe": "candidate_distill_v3_adapterseed2026071200_formal",
-  "status": "formal_running_after_adapter_hash_preflight",
-  "next_gate": "preregistered_three_seed_paired_decision",
-  "baseline": "same candidate-distillation execution path with reward_pg_lr=0",
-  "primary_metric": "seed-level paired score delta",
+  "active_probe": "cohort_qonly_frozen_tape_causal_smoke_attempt_002",
+  "status": "running_blinded_liveness_only",
+  "mechanism_family": "frozen_tape_reward_pg_plus_env_bon_prefix_qonly",
+  "job_name": "ttt-rl-causal-a40-p2-0",
+  "job_id": "eeed73a4-e7c3-4d11-accb-24b39c1c2827",
+  "pluto_priority": "P2_after_live_P1_capacity_zero",
+  "source_commit": "1caf142f6ce611da8da8691d4c336388a4c3c4b3",
+  "attempt": "attempt-002",
+  "next_gate": "sealed_two_instance_active_vs_lr0_causal_smoke",
+  "baseline": "byte_identical_frozen_tape_lr0_replay",
+  "primary_metric": "seed_level_heldout_active_minus_lr0_official_reward",
   "success_threshold": {
-    "mean_delta_gte": 0.03,
-    "median_delta_gt": 0.0,
-    "min_delta_gt": -0.03,
-    "positive_seeds_gte": 2
+    "all_three_seed_deltas_strictly_positive": true,
+    "mean_delta_gte": 0.02,
+    "clustered_95pct_lower_gt": 0.0,
+    "no_schema_regression": true
   },
-  "gate_artifact": "bench_artifacts/candidate_distill_v2_lr0_gate_20260712/summary.md",
-  "formal_artifact": "bench_artifacts/candidate_distill_v3_formal_20260713/summary.md",
-  "formal_commit": "b74bc81f0c4d326f149d5b4d5409b1aa5f9521c0",
-  "adapter_init_seed": 2026071200,
-  "adapter_preflight_sha256": "4e904ce3813b2c0ec0bbd13fcd838b1d6704ef801b1db20d1d4259a84e7e1d7f"
+  "competitive_control": {
+    "name": "cohort_reward_aware_online_icl_v1",
+    "status": "preoutcome_integrity_audited_independent_blind_smoke_pending_clean_push",
+    "launch_condition": "causal_smoke_pass_and_clean_pushed_protocol_seal"
+  },
+  "retired_routes": [
+    "historical_group_pg_after_failed_candidate_diversity_gate",
+    "candidate_distillation_after_failed_formal_efficacy"
+  ],
+  "allowed_pivot_after_valid_no_go": "structured_latent_state_only",
+  "sales_status": "deferred_until_cohort_positive_or_declared_second_task"
 }

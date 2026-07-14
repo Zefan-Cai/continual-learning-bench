@@ -312,7 +312,11 @@ def run_task(
     reset_between_instances: bool = False,
     phase: str = "rollout",
     initial_query: Optional[Query] = None,
+    before_respond: Optional[Callable[[int, Query], None]] = None,
     before_observe: Optional[
+        Callable[[int, Query, Response, TaskStepResult], None]
+    ] = None,
+    after_observe: Optional[
         Callable[[int, Query, Response, TaskStepResult], None]
     ] = None,
 ) -> TaskResult:
@@ -338,10 +342,17 @@ def run_task(
         phase: Human-readable run phase for progress logging.
         initial_query: Optional pre-built first query. When provided, the runner
             skips ``task.reset()`` and starts from this query directly.
+        before_respond: Optional fail-closed hook invoked immediately before
+            each ``system.respond`` call. It can audit a state boundary but must
+            not mutate the task query.
         before_observe: Optional fail-closed hook invoked after task scoring and
             reward metadata attachment but immediately before ``system.observe``.
             It is intended for auditable post-commit capture such as a frozen
             update tape; normal runs should leave it unset.
+        after_observe: Optional fail-closed hook invoked immediately after
+            ``system.observe`` and before trace serialization. It is intended
+            for auditable state-boundary operations such as restoring a sealed
+            ICL context after each completed held-out instance.
 
     Returns:
         TaskResult with evaluation metrics
@@ -390,10 +401,12 @@ def run_task(
         )
         _prev_handler = None
         if _use_alarm:
+
             def _on_alarm(signum, frame):
                 raise _InstanceTimeout(
                     f"system.respond exceeded CLBENCH_INSTANCE_TIMEOUT={_timeout_s}s"
                 )
+
             _prev_handler = signal.signal(signal.SIGALRM, _on_alarm)
             signal.alarm(_timeout_s)
         try:
@@ -505,6 +518,8 @@ def run_task(
 
             step_result: Optional[TaskStepResult] = None
             try:
+                if before_respond is not None:
+                    before_respond(step, query)
                 (
                     response,
                     response_elapsed_seconds,
@@ -595,6 +610,8 @@ def run_task(
             if before_observe is not None:
                 before_observe(step, query, response, step_result)
             system.observe(step_result.observation, step_result.next_query)
+            if after_observe is not None:
+                after_observe(step, query, response, step_result)
             observe_events = serialize_usage_events(system.consume_usage_events())
 
             if trace_recorder is not None:

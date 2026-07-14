@@ -1,0 +1,102 @@
+{
+  "herald_suburban": {
+    "survival_12m": 0.744357,
+    "survival_24m": 0.372258,
+    "survival_36m": 0.172642
+  },
+  "herald_rural": {
+    "survival_12m": 0.816829,
+    "survival_24m": 0.489119,
+    "survival_36m": 0.209623
+  },
+  "herald_suburban_s2": {
+    "survival_12m": 0.751056,
+    "survival_24m": 0.486477,
+    "survival_36m": 0.209136
+  },
+  "herald_rural_s2": {
+    "survival_12m": 0.82327,
+    "survival_24m": 0.486872,
+    "survival_36m": 0.220339
+  },
+  "meridian_suburban": {
+    "survival_12m": 0.832481,
+    "survival_24m": 0.406905,
+    "survival_36m": 0.193093
+  },
+  "meridian_rural": {
+    "survival_12m": 0.820676,
+    "survival_24m": 0.462793,
+    "survival_36m": 0.251666
+  },
+  "meridian_suburban_s2": {
+    "survival_12m": 0.822675,
+    "survival_24m": 0.381146,
+    "survival_36m": 0.127049
+  },
+  "meridian_rural_s2": {
+    "survival_12m": 0.766839,
+    "survival_24m": 0.411681,
+    "survival_36m": 0.179451
+  },
+  "mosaic_urban": {
+    "survival_12m": 0.796875,
+    "survival_24m": 0.439876,
+    "survival_36m": 0.176933
+  },
+  "mosaic_suburban": {
+    "survival_12m": 0.740733,
+    "survival_24m": 0.320282,
+    "survival_36m": 0.117953
+  },
+  "mosaic_urban_s2": {
+    "survival_12m": 0.787402,
+    "survival_24m": 0.429673,
+    "survival_36m": 0.198923
+  },
+  "mosaic_suburban_s2": {
+    "survival_12m": 0.789405,
+    "survival_24m": 0.388052,
+    "survival_36m": 0.135422
+  },
+  "forge_industrial": {
+    "survival_12m": 0.307873,
+    "survival_24m": 0.123569,
+    "survival_36m": 0.069682
+  },
+  "forge_urban": {
+    "survival_12m": 0.578192,
+    "survival_24m": 0.385462,
+    "survival_36m": 0.248693
+  },
+  "forge_industrial_s2": {
+    "survival_12m": 0.315872,
+    "survival_24m": 0.145468,
+    "survival_36m": 0.095593
+  },
+  "forge_urban_s2": {
+    "survival_12m": 0.50365,
+    "survival_24m": 0.305776,
+    "survival_36m": 0.201365
+  },
+  "cadence_urban": {
+    "survival_12m": 0.884751,
+    "survival_24m": 0.678407,
+    "survival_36m": 0.405187
+  },
+  "cadence_industrial": {
+    "survival_12m": 0.779528,
+    "survival_24m": 0.503937,
+    "survival_36m": 0.34442
+  },
+  "cadence_urban_s2": {
+    "survival_12m": 0.868371,
+    "survival_24m": 0.689122,
+    "survival_36m": 0.493631
+  },
+  "cadence_industrial_s2": {
+    "survival_12m": 0.783105,
+    "survival_24m": 0.545524,
+    "survival_36m": 0.289293
+  }
+}
