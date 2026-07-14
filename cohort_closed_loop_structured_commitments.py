@@ -409,6 +409,30 @@ def _require_exact_keys(
     return value
 
 
+def _exact_type_equal(actual: object, expected: object) -> bool:
+    """Compare JSON-shaped values without Python's bool/int coercions."""
+
+    if type(actual) is not type(expected):
+        return False
+    if type(expected) is dict:
+        actual_dict = actual
+        expected_dict = expected
+        if set(actual_dict) != set(expected_dict):
+            return False
+        return all(
+            _exact_type_equal(actual_dict[key], expected_dict[key])
+            for key in expected_dict
+        )
+    if type(expected) is list:
+        actual_list = actual
+        expected_list = expected
+        return len(actual_list) == len(expected_list) and all(
+            _exact_type_equal(left, right)
+            for left, right in zip(actual_list, expected_list, strict=True)
+        )
+    return actual == expected
+
+
 def _require_sha256(value: object, label: str) -> str:
     if type(value) is not str or _SHA256_RE.fullmatch(value) is None:
         raise StructuredCommitmentError(f"{label} must be lowercase SHA256 hex")
@@ -605,7 +629,7 @@ def _validate_inventory(value: object) -> tuple[tuple[str, str], ...]:
 
 def _validate_numerical_runtime(value: object) -> None:
     obj = _require_exact_keys(value, _NUMERICAL_RUNTIME_KEYS, "numerical_runtime")
-    if obj != numerical_runtime_identity():
+    if not _exact_type_equal(obj, numerical_runtime_identity()):
         raise StructuredCommitmentError(
             "serializer or numerical runtime identity drift"
         )
@@ -618,7 +642,7 @@ def _validate_probe_design(value: object) -> None:
         "rho_float_hex": RHO.hex(),
         "u": [list(row) for row in U],
     }
-    if obj != expected:
+    if not _exact_type_equal(obj, expected):
         raise StructuredCommitmentError("probe design differs from sealed primitives")
 
 
