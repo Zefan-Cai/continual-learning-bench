@@ -22,7 +22,11 @@ from typing import Any
 
 from generate_cohort_causal_grid import ADAPTER_INIT_SEED
 from run_cohort_causal import REQUIRED_PROVENANCE_FIELDS
-from validate_cohort_causal_results import PREREGISTERED_PARENT_COMMIT
+from validate_cohort_causal_results import (
+    EXPECTED_STATISTICAL_ADDENDUM_SHA256,
+    PREREGISTERED_PARENT_COMMIT,
+    STATISTICAL_ADDENDUM_FILENAME,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -33,6 +37,7 @@ AUDIT_KIND = "cohort_causal_provenance_audit"
 # evaluation-affecting code must be an explicit provenance-contract change.
 EVALUATION_CODE_ALLOWLIST = (
     "COHORT_QONLY_CAUSAL_PREREG.md",
+    "COHORT_QONLY_CAUSAL_STATISTICAL_ADDENDUM_V1.md",
     "assemble_cohort_causal_manifest.py",
     "build_cohort_causal_provenance.py",
     "generate_cohort_causal_grid.py",
@@ -361,10 +366,48 @@ def hash_evaluation_code(root: Path) -> dict[str, Any]:
         records.append(_file_record(path, relative_to=root, role="evaluation_code"))
     if missing:
         raise FileNotFoundError(f"required evaluation code file(s) missing: {missing}")
+    tracked = subprocess.run(
+        [
+            "git",
+            "ls-files",
+            "--error-unmatch",
+            "--",
+            *EVALUATION_CODE_ALLOWLIST,
+        ],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if tracked.returncode != 0:
+        raise RuntimeError(
+            "every evaluation-code allowlist entry must be tracked by Git"
+        )
+    tracked_paths = {line for line in tracked.stdout.splitlines() if line}
+    if tracked_paths != set(EVALUATION_CODE_ALLOWLIST):
+        raise RuntimeError(
+            "Git-tracked evaluation-code inventory differs from the allowlist"
+        )
     return {
         "allowlist": list(EVALUATION_CODE_ALLOWLIST),
         "files": records,
         "inventory_sha256": canonical_sha256(records),
+    }
+
+
+def hash_statistical_addendum(root: Path) -> dict[str, Any]:
+    """Bind the exact registered addendum bytes independently of code inventory."""
+
+    path = root / STATISTICAL_ADDENDUM_FILENAME
+    if not path.is_file():
+        raise FileNotFoundError(f"required statistical addendum missing: {path}")
+    digest, size_bytes = _sha256_file(path)
+    if digest != EXPECTED_STATISTICAL_ADDENDUM_SHA256:
+        raise RuntimeError("statistical addendum bytes differ from registered SHA-256")
+    return {
+        "path": STATISTICAL_ADDENDUM_FILENAME,
+        "sha256": digest,
+        "size_bytes": size_bytes,
     }
 
 
@@ -386,6 +429,7 @@ def create_provenance_bundle(
     environment_sha256 = canonical_sha256(environment)
     model, tokenizer = hash_hf_model(model_path)
     evaluation = hash_evaluation_code(root)
+    statistical_addendum = hash_statistical_addendum(root)
     if _git_snapshot(root) != source_commit:
         raise RuntimeError("git HEAD changed while building provenance")
 
@@ -397,6 +441,7 @@ def create_provenance_bundle(
         "model_sha256": model["inventory_sha256"],
         "preregistered_parent_commit": PREREGISTERED_PARENT_COMMIT,
         "source_commit": source_commit,
+        "statistical_addendum_sha256": statistical_addendum["sha256"],
         "tokenizer_sha256": tokenizer["inventory_sha256"],
     }
     if set(provenance) != REQUIRED_PROVENANCE_FIELDS:
@@ -411,6 +456,7 @@ def create_provenance_bundle(
         "model": {"path": str(model_path), **model},
         "provenance": provenance,
         "schema_version": SCHEMA_VERSION,
+        "statistical_addendum": statistical_addendum,
         "tokenizer": {"path": str(model_path), **tokenizer},
     }
     return provenance, details

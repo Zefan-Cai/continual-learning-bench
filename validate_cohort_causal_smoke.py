@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -16,12 +17,16 @@ from run_cohort_causal import (
     _collector_manifest_path,
     _dataset_projection,
     _resolve,
+    _trace_paths,
     load_grid,
     load_provenance,
 )
 from validate_cohort_causal_results import (
+    EXPECTED_STATISTICAL_ADDENDUM_SHA256,
     LIMITATION,
     MECHANISM_LABEL,
+    STATISTICAL_ADDENDUM_FILENAME,
+    _exact_zero_value_count,
     canonical_sha256,
     masked_pair_config_sha256,
     validate_tape_nested_semantics,
@@ -53,10 +58,124 @@ def _equal(left: Any, right: Any) -> bool:
     return canonical_sha256(left) == canonical_sha256(right)
 
 
+def _terminal_action_summary(
+    *,
+    root: Path,
+    cfg: dict[str, Any],
+    cell: dict[str, Any],
+    heldout_ids: list[str],
+    label: str,
+    errors: list[str],
+) -> dict[str, Any]:
+    """Bind the registered 2-ID trace and enforce deterministic qonly output."""
+
+    summary = {
+        "canonical_hash_count": 0,
+        "canonical_sha256": [],
+        "count": 0,
+        "unique_count": 0,
+        "zero_value_count": None,
+    }
+    expected_trace_path, _ = _trace_paths(root, cfg)
+    recorded_path = cell.get("trace_path")
+    if not isinstance(recorded_path, str) or not recorded_path:
+        errors.append(f"{label} has no trace_path")
+        return summary
+    if _resolve(root, recorded_path).resolve() != expected_trace_path.resolve():
+        errors.append(f"{label} trace_path is not registered")
+        return summary
+    try:
+        trace = _load_object(expected_trace_path)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        errors.append(f"{label} trace cannot be loaded: {exc}")
+        return summary
+    try:
+        trace_digest = canonical_sha256(trace)
+    except (TypeError, ValueError) as exc:
+        errors.append(f"{label} trace cannot be canonicalized: {exc}")
+    else:
+        if cell.get("trace_sha256") != trace_digest:
+            errors.append(f"{label} trace SHA-256 mismatch")
+    interactions = trace.get("interactions")
+    if not isinstance(interactions, list):
+        errors.append(f"{label} trace interactions must be a list")
+        return summary
+    actions: list[Any] = []
+    for interaction in interactions:
+        if not isinstance(interaction, dict):
+            continue
+        observation = interaction.get("observation")
+        if not isinstance(observation, dict) or observation.get(
+            "instance_complete"
+        ) is not True:
+            continue
+        position = len(actions)
+        query = interaction.get("query")
+        if not isinstance(query, dict) or (
+            query.get("instance_id"),
+            query.get("instance_index"),
+        ) != (
+            heldout_ids[position] if position < len(heldout_ids) else None,
+            position,
+        ):
+            errors.append(f"{label} terminal identity/order mismatch")
+        response = interaction.get("response")
+        action = response.get("action") if isinstance(response, dict) else None
+        if not isinstance(action, dict):
+            errors.append(f"{label} terminal action must be an object")
+            continue
+        actions.append(action)
+    hashes: list[str] = []
+    zero_value_counts: list[int] = []
+    for position, action in enumerate(actions):
+        try:
+            hashes.append(canonical_sha256(action))
+            zero_value_counts.append(_exact_zero_value_count(action))
+        except (TypeError, ValueError) as exc:
+            errors.append(
+                f"{label} terminal action {position} cannot be canonicalized: {exc}"
+            )
+    unique_hashes = sorted(set(hashes))
+    summary = {
+        "canonical_hash_count": len(hashes),
+        "canonical_sha256": unique_hashes,
+        "count": len(actions),
+        "unique_count": len(unique_hashes),
+        "zero_value_count": (
+            zero_value_counts[0]
+            if zero_value_counts and len(set(zero_value_counts)) == 1
+            else None
+        ),
+    }
+    if len(actions) != 2:
+        errors.append(f"{label} trace must contain exactly 2 terminal actions")
+    elif len(hashes) != 2:
+        errors.append(f"{label} trace requires 2 canonical terminal action hashes")
+    elif len(unique_hashes) != 1:
+        errors.append(
+            f"{label} deterministic qonly contract requires terminal action "
+            "canonical SHA-256 unique count=1"
+        )
+    return summary
+
+
 def validate_smoke(
     *, root: Path, grid: dict[str, Any], provenance: dict[str, Any]
 ) -> dict[str, Any]:
     errors: list[str] = []
+    if provenance.get("statistical_addendum_sha256") != (
+        EXPECTED_STATISTICAL_ADDENDUM_SHA256
+    ):
+        errors.append("provenance statistical addendum SHA-256 mismatch")
+    try:
+        addendum_digest = hashlib.sha256(
+            (root / STATISTICAL_ADDENDUM_FILENAME).read_bytes()
+        ).hexdigest()
+    except OSError as exc:
+        errors.append(f"checked-in statistical addendum cannot be read: {exc}")
+    else:
+        if addendum_digest != EXPECTED_STATISTICAL_ADDENDUM_SHA256:
+            errors.append("checked-in statistical addendum SHA-256 drift")
     if grid.get("kind") != "smoke":
         errors.append("grid kind must be smoke")
     collectors = grid.get("collectors", [])
@@ -125,6 +244,7 @@ def validate_smoke(
     replay_signatures: dict[str, list[list[tuple[Any, Any, Any]]]] = {}
     repair_totals: dict[str, int] = {}
     changed_operation_counts: dict[str, int] = {}
+    terminal_actions: dict[str, dict[str, Any]] = {}
     for arm in ("active", "lr0"):
         cfg, cell = by_arm[arm]
         label = f"{arm} cell"
@@ -420,6 +540,14 @@ def validate_smoke(
                 )
             ):
                 errors.append(f"{label} score is not the held-out reward mean")
+        terminal_actions[arm] = _terminal_action_summary(
+            root=root,
+            cfg=cfg,
+            cell=cell,
+            heldout_ids=heldout["canonical_instance_ids"][:2],
+            label=label,
+            errors=errors,
+        )
 
     if masked_hashes.get("active") != masked_hashes.get("lr0"):
         errors.append("paired configs differ beyond the registered learning rates")
@@ -439,7 +567,13 @@ def validate_smoke(
         errors.append("paired ordered operation/input signatures differ")
     if repair_totals.get("active", 0) > repair_totals.get("lr0", 0):
         errors.append("active parse retry/repair total exceeds LR0")
-    return _report(errors, tape_digest, collector_initial, provenance)
+    return _report(
+        errors,
+        tape_digest,
+        collector_initial,
+        provenance,
+        terminal_actions=terminal_actions,
+    )
 
 
 def _report(
@@ -447,6 +581,7 @@ def _report(
     tape_sha256: Any,
     initial_sha256: Any,
     provenance: dict[str, Any],
+    terminal_actions: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "schema_version": 1,
@@ -457,6 +592,10 @@ def _report(
         "tape_sha256": tape_sha256,
         "trainable_param_sha256_initial": initial_sha256,
         "provenance_sha256": canonical_sha256(provenance),
+        "statistical_addendum_sha256": provenance.get(
+            "statistical_addendum_sha256"
+        ),
+        "terminal_actions": terminal_actions or {},
         "errors": sorted(set(errors)),
     }
 

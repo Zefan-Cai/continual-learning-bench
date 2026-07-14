@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 import run_cohort_causal as runner
+from validate_cohort_causal_results import EXPECTED_STATISTICAL_ADDENDUM_SHA256
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -240,6 +241,7 @@ def provenance(smoke_grid):
         "model_sha256": "4" * 64,
         "tokenizer_sha256": "5" * 64,
         "evaluation_code_sha256": "6" * 64,
+        "statistical_addendum_sha256": EXPECTED_STATISTICAL_ADDENDUM_SHA256,
         "model_path": smoke_grid["collectors"][0]["system_params"]["model_path"],
         "adapter_init_seed": smoke_grid["adapter_init_seed"],
     }

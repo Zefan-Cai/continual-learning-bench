@@ -44,6 +44,7 @@ REQUIRED_PROVENANCE_FIELDS = {
     "model_sha256",
     "tokenizer_sha256",
     "evaluation_code_sha256",
+    "statistical_addendum_sha256",
     "model_path",
     "adapter_init_seed",
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assemble the six audited cell artifacts into one formal validator input."""
+"""Assemble the six audited cell artifacts into one formal evidence input."""
 
 from __future__ import annotations
 
@@ -21,11 +21,13 @@ from run_cohort_causal import (
 )
 from validate_cohort_causal_results import (
     EXPECTED_PREREGISTRATION_SHA256,
+    EXPECTED_STATISTICAL_ADDENDUM_SHA256,
     EXPERIMENT,
     LIMITATION,
     MECHANISM_LABEL,
     PREREGISTRATION_FILENAME,
     SCHEMA_VERSION,
+    STATISTICAL_ADDENDUM_FILENAME,
     canonical_sha256,
     tape_item_sha256,
     tape_sha256,
@@ -106,9 +108,10 @@ def assemble_manifest(
     grid: dict[str, Any],
     provenance: dict[str, Any],
     preregistration_path: Path,
+    statistical_addendum_path: Path | None = None,
 ) -> dict[str, Any]:
     if grid.get("kind") != "formal":
-        raise ValueError("the publication manifest can only be assembled from formal grid")
+        raise ValueError("the evidence manifest can only be assembled from formal grid")
     collectors = {
         row["run_seed"]: row for row in grid.get("collectors", [])
     }
@@ -183,6 +186,31 @@ def assemble_manifest(
     preregistration_sha256 = hashlib.sha256(preregistration_bytes).hexdigest()
     if preregistration_sha256 != EXPECTED_PREREGISTRATION_SHA256:
         raise ValueError("checked-in preregistration bytes differ from validator binding")
+    registered_statistical_addendum = root / STATISTICAL_ADDENDUM_FILENAME
+    requested_statistical_addendum = (
+        registered_statistical_addendum
+        if statistical_addendum_path is None
+        else statistical_addendum_path
+    )
+    if (
+        requested_statistical_addendum.resolve()
+        != registered_statistical_addendum.resolve()
+    ):
+        raise ValueError(
+            "statistical addendum path is not the checked-in repository file"
+        )
+    statistical_addendum_bytes = registered_statistical_addendum.read_bytes()
+    statistical_addendum_sha256 = hashlib.sha256(
+        statistical_addendum_bytes
+    ).hexdigest()
+    if statistical_addendum_sha256 != EXPECTED_STATISTICAL_ADDENDUM_SHA256:
+        raise ValueError(
+            "checked-in statistical addendum bytes differ from validator binding"
+        )
+    if provenance.get("statistical_addendum_sha256") != (
+        statistical_addendum_sha256
+    ):
+        raise ValueError("provenance statistical addendum SHA-256 mismatch")
     return {
         "schema_version": SCHEMA_VERSION,
         "experiment": EXPERIMENT,
@@ -190,6 +218,7 @@ def assemble_manifest(
         "mechanism_label": MECHANISM_LABEL,
         "limitation": LIMITATION,
         "preregistration_sha256": preregistration_sha256,
+        "statistical_addendum_sha256": statistical_addendum_sha256,
         "provenance": provenance,
         "corpora": {
             "adaptation": _dataset_projection(root, grid, "adaptation"),
@@ -209,6 +238,7 @@ def main() -> None:
         type=Path,
         default=ROOT / "COHORT_QONLY_CAUSAL_PREREG.md",
     )
+    parser.add_argument("--statistical-addendum", type=Path)
     parser.add_argument("--root", type=Path, default=ROOT)
     args = parser.parse_args()
     output = args.output.resolve()
@@ -219,6 +249,11 @@ def main() -> None:
         grid=load_grid(args.grid.resolve()),
         provenance=load_provenance(args.provenance.resolve()),
         preregistration_path=args.preregistration.resolve(),
+        statistical_addendum_path=(
+            args.statistical_addendum.resolve()
+            if args.statistical_addendum is not None
+            else None
+        ),
     )
     _atomic_write_json(output, manifest)
     print(f"wrote {output}")

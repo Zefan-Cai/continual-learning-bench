@@ -8,7 +8,11 @@ import pytest
 
 from assemble_cohort_causal_manifest import _verify_tape, assemble_manifest
 from run_cohort_causal import _collector_manifest_path, _trace_paths
-from validate_cohort_causal_results import canonical_sha256
+from validate_cohort_causal_results import (
+    EXPECTED_STATISTICAL_ADDENDUM_SHA256,
+    STATISTICAL_ADDENDUM_FILENAME,
+    canonical_sha256,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -64,6 +68,7 @@ def test_assemble_formal_manifest_splits_label_and_binds_all_cells(tmp_path):
         "model_sha256": "4" * 64,
         "tokenizer_sha256": "5" * 64,
         "evaluation_code_sha256": "6" * 64,
+        "statistical_addendum_sha256": EXPECTED_STATISTICAL_ADDENDUM_SHA256,
         "model_path": "/sensei-fs/users/zcai/models/Qwen3-4B",
         "adapter_init_seed": grid["adapter_init_seed"],
     }
@@ -111,6 +116,8 @@ def test_assemble_formal_manifest_splits_label_and_binds_all_cells(tmp_path):
             )
     preregistration = tmp_path / "COHORT_QONLY_CAUSAL_PREREG.md"
     shutil.copyfile(REPO_ROOT / preregistration.name, preregistration)
+    statistical_addendum = tmp_path / STATISTICAL_ADDENDUM_FILENAME
+    shutil.copyfile(REPO_ROOT / statistical_addendum.name, statistical_addendum)
 
     manifest = assemble_manifest(
         root=tmp_path,
@@ -121,6 +128,10 @@ def test_assemble_formal_manifest_splits_label_and_binds_all_cells(tmp_path):
 
     assert manifest["mechanism_label"] == "frozen-tape weight-update ablation"
     assert manifest["limitation"] == "not exact historical replication"
+    assert (
+        manifest["statistical_addendum_sha256"]
+        == EXPECTED_STATISTICAL_ADDENDUM_SHA256
+    )
     assert len(manifest["pairs"]) == 3
     assert manifest["corpora"]["adaptation"]["canonical_instance_ids"] != manifest[
         "corpora"
@@ -170,4 +181,15 @@ def test_assemble_formal_manifest_splits_label_and_binds_all_cells(tmp_path):
             grid=grid,
             provenance=provenance,
             preregistration_path=alternate_preregistration,
+        )
+
+    alternate_addendum = tmp_path / "alternate-addendum.md"
+    alternate_addendum.write_bytes(statistical_addendum.read_bytes())
+    with pytest.raises(ValueError, match="addendum path is not the checked-in"):
+        assemble_manifest(
+            root=tmp_path,
+            grid=grid,
+            provenance=provenance,
+            preregistration_path=preregistration,
+            statistical_addendum_path=alternate_addendum,
         )

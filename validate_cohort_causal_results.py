@@ -7,8 +7,10 @@ corpora, tapes, replay hash chains, provenance, and held-out outcomes, and only
 then computes the preregistered endpoint.
 
 ``decision=invalid`` is an integrity/schema failure and exits non-zero.
-``decision=valid_no_go`` is a valid scientific result that misses at least one
-efficacy threshold.  ``decision=pass`` is the only expansion-eligible result.
+``decision=valid_no_go`` is a valid internal screen that misses at least one
+legacy efficacy threshold. ``decision=pass`` is retained for compatibility and
+must be interpreted only as ``decision_scope=internal_gate_pass``. Neither
+outcome is publication-grade without the separately preregistered confirmation.
 """
 
 from __future__ import annotations
@@ -35,6 +37,10 @@ PREREGISTRATION_FILENAME = "COHORT_QONLY_CAUSAL_PREREG.md"
 EXPECTED_PREREGISTRATION_SHA256 = (
     "f9bb24bee51eabf155f5fac74a215304053f5156dd567ed9c19aa027aa88c94b"
 )
+STATISTICAL_ADDENDUM_FILENAME = "COHORT_QONLY_CAUSAL_STATISTICAL_ADDENDUM_V1.md"
+EXPECTED_STATISTICAL_ADDENDUM_SHA256 = (
+    "516a0748027c8740993c9951f08c23401c55a558d9849f6c63b56dee307ecafc"
+)
 
 EXPECTED_RUN_SEEDS = (2026071401, 2026071402, 2026071403)
 EXPECTED_ADAPTER_INIT_SEED = 2026071400
@@ -46,6 +52,9 @@ EXPECTED_SAMPLING_RNG_BINDING = (
 BOOTSTRAP_SEED = 2026071499
 BOOTSTRAP_REPLICATES = 50_000
 GO_MEAN_DELTA = 0.02
+SCREEN_EFFECTIVE_N = 3
+SCREEN_FIXED_SCORING_CONDITIONS = 20
+T_CRITICAL_95_DF2 = 4.302652729911275
 
 EXPECTED_SYSTEM_CONFIG: dict[str, Any] = {
     "model_path": "/sensei-fs/users/zcai/models/Qwen3-4B",
@@ -174,12 +183,14 @@ _MANIFEST_KEYS = {
     "mechanism_label",
     "limitation",
     "preregistration_sha256",
+    "statistical_addendum_sha256",
     "provenance",
     "corpora",
     "pairs",
 }
 _PROVENANCE_KEYS = {
     "source_commit",
+    "statistical_addendum_sha256",
     "preregistered_parent_commit",
     "environment_lock_sha256",
     "model_sha256",
@@ -605,7 +616,12 @@ def _percentile(sorted_values: list[float], quantile: float) -> float:
 def hierarchical_paired_bootstrap(
     paired_deltas: list[list[float]],
 ) -> dict[str, Any]:
-    """Run the exact preregistered common-ID hierarchical paired bootstrap."""
+    """Run the legacy preregistered common-ID hierarchical paired bootstrap.
+
+    The 20 IDs are fixed scoring conditions under deterministic qonly decoding,
+    not independent inferential units.  The calculation is retained for exact
+    preregistration compatibility and is explicitly not publication-grade.
+    """
 
     if len(paired_deltas) != len(EXPECTED_RUN_SEEDS) or any(
         len(row) != EXPECTED_OUTCOMES for row in paired_deltas
@@ -634,9 +650,107 @@ def hierarchical_paired_bootstrap(
     upper = _percentile(replicates, 0.975)
     return {
         "ci_95": [round(lower, 12), round(upper, 12)],
+        "fixed_scoring_conditions": SCREEN_FIXED_SCORING_CONDITIONS,
         "method": "hierarchical_paired_common_instance_ids_percentile_type7",
+        "publication_grade": False,
         "replicates": BOOTSTRAP_REPLICATES,
         "seed": BOOTSTRAP_SEED,
+    }
+
+
+def _exact_two_sided_sign_test(seed_deltas: list[float]) -> dict[str, Any]:
+    """Exact two-sided binomial sign test, excluding exact zero differences."""
+
+    positives = sum(delta > 0.0 for delta in seed_deltas)
+    negatives = sum(delta < 0.0 for delta in seed_deltas)
+    zeros = len(seed_deltas) - positives - negatives
+    nonzero = positives + negatives
+    if nonzero == 0:
+        p_value = 1.0
+    else:
+        extreme = max(positives, negatives)
+        tail = sum(
+            math.comb(nonzero, count)
+            for count in range(extreme, nonzero + 1)
+        ) / (2**nonzero)
+        p_value = min(1.0, 2.0 * tail)
+    return {
+        "alternative": "two_sided",
+        "method": "exact_binomial_sign_test_zero_deltas_excluded",
+        "negative_seed_deltas": negatives,
+        "nonzero_seed_deltas": nonzero,
+        "p_value": round(p_value, 12),
+        "positive_seed_deltas": positives,
+        "zero_seed_deltas": zeros,
+    }
+
+
+def _exact_zero_value_count(action: dict[str, Any]) -> int:
+    """Count submitted numeric zeroes without treating them as invalid."""
+
+    return sum(
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and float(value) == 0.0
+        for value in action.values()
+    )
+
+
+def _publication_inference(
+    seed_deltas: list[float], *, internal_gate_passed: bool
+) -> dict[str, Any]:
+    """Build the addendum-required seed-level interpretation envelope."""
+
+    if len(seed_deltas) != SCREEN_EFFECTIVE_N:
+        raise ValueError("publication inference requires exactly three seed deltas")
+    mean_delta = statistics.mean(seed_deltas)
+    sample_sd = statistics.stdev(seed_deltas)
+    half_width = T_CRITICAL_95_DF2 * sample_sd / math.sqrt(SCREEN_EFFECTIVE_N)
+    return {
+        "confirmation_contract": {
+            "causal_component_ablations_required": True,
+            "fixed_population_scope_only_if_dgp_requirement_not_met": True,
+            "independent_dgp_population_per_seed_preferred": True,
+            "mean_seed_delta_gte": GO_MEAN_DELTA,
+            "minimum_new_adaptation_seeds": 6,
+            "minimum_independent_frozen_dgp_populations": 2,
+            "must_exclude_screen_seeds": list(EXPECTED_RUN_SEEDS),
+            "primary_inference": "two_sided_exact_sign_flip",
+            "primary_inferential_unit": "adaptation_seed",
+            "seed_level_interval_95_lower_gt": 0.0,
+            "seed_to_population_mapping_preregistered_required": True,
+            "separate_preregistration_required": True,
+        },
+        "effective_n": SCREEN_EFFECTIVE_N,
+        "exact_sign_test": _exact_two_sided_sign_test(seed_deltas),
+        "fixed_scoring_conditions": SCREEN_FIXED_SCORING_CONDITIONS,
+        "internal_screen_status": (
+            "internal_gate_pass" if internal_gate_passed else "internal_gate_no_go"
+        ),
+        "legacy_hierarchical_bootstrap_publication_grade": False,
+        "negative_interpretation": {
+            "harm_established": False,
+            "harm_requires": "publication_grade_seed_level_one_sided_95_upper_lt_0",
+            "practical_benefit_at_least_0_02_ruled_out": False,
+            "practical_benefit_exclusion_requires": (
+                "publication_grade_seed_level_one_sided_95_upper_lt_0_02"
+            ),
+            "valid_no_go_establishes_zero_or_harm": False,
+        },
+        "primary_inferential_unit": "adaptation_seed",
+        "publication_grade": False,
+        "raw_seed_deltas": [round(delta, 12) for delta in seed_deltas],
+        "sample_sd": round(sample_sd, 12),
+        "seed_mean_delta": round(mean_delta, 12),
+        "seed_level_t_interval_95": {
+            "critical_value": T_CRITICAL_95_DF2,
+            "df": 2,
+            "lower": round(mean_delta - half_width, 12),
+            "method": "two_sided_student_t_interval_over_seed_deltas",
+            "normality_dependent_descriptive": True,
+            "upper": round(mean_delta + half_width, 12),
+        },
+        "status": "confirmation_required_not_publication_grade",
     }
 
 
@@ -876,9 +990,15 @@ def _validate_provenance(value: Any, errors: list[str]) -> dict[str, Any] | None
         "model_sha256",
         "tokenizer_sha256",
         "evaluation_code_sha256",
+        "statistical_addendum_sha256",
     ):
         if not _is_sha256(value.get(field)):
             errors.append(f"provenance: {field} must be a lowercase SHA-256")
+    if (
+        value.get("statistical_addendum_sha256")
+        != EXPECTED_STATISTICAL_ADDENDUM_SHA256
+    ):
+        errors.append("provenance: statistical addendum SHA-256 mismatch")
     if value.get("model_path") != EXPECTED_SYSTEM_CONFIG["model_path"]:
         errors.append("provenance: model_path mismatch")
     if value.get("adapter_init_seed") != EXPECTED_ADAPTER_INIT_SEED:
@@ -991,7 +1111,7 @@ def _exact_keys(value: Any, expected: set[str], *, label: str, errors: list[str]
 
 
 def _validate_formal_exact_schema(manifest: dict[str, Any]) -> list[str]:
-    """Validate the publication evidence envelope with no ignored fields.
+    """Validate the formal evidence envelope with no ignored fields.
 
     The semantic validators below remain responsible for values.  This pass is
     deliberately separate so the preregistered ``no_schema_format_regression``
@@ -1857,13 +1977,13 @@ def _validate_bound_heldout_trace(
     heldout_ids: list[str],
     scoring_contract: dict[str, Any] | None,
     errors: list[str],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str], list[int]]:
     """Verify, independently rescore, and reconstruct held-out trace outcomes."""
 
     trace = cell.get("heldout_trace")
     if not isinstance(trace, dict):
         errors.append(f"{label}: heldout_trace must be an object")
-        return [], []
+        return [], [], [], []
     _exact_keys(trace, _TRACE_KEYS, label=f"{label}/heldout_trace", errors=errors)
     embedded_digest = cell.get("trace_sha256")
     if not _is_sha256(embedded_digest):
@@ -1946,6 +2066,8 @@ def _validate_bound_heldout_trace(
 
     terminal_by_identity: dict[tuple[Any, Any], dict[str, Any]] = {}
     terminal_signatures: list[dict[str, Any]] = []
+    terminal_action_sha256s: list[str] = []
+    terminal_action_zero_value_counts: list[int] = []
     terminal_count = 0
     segment_length = 0
     for interaction_index, interaction in enumerate(interactions):
@@ -2091,8 +2213,21 @@ def _validate_bound_heldout_trace(
         )
         if response.get("action_type") != "structured":
             errors.append(f"{interaction_label}: terminal action_type mismatch")
+        action = response.get("action")
+        if isinstance(action, dict):
+            try:
+                terminal_action_sha256s.append(canonical_sha256(action))
+                terminal_action_zero_value_counts.append(
+                    _exact_zero_value_count(action)
+                )
+            except (TypeError, ValueError) as exc:
+                errors.append(
+                    f"{interaction_label}: terminal action cannot be canonicalized: {exc}"
+                )
+        else:
+            errors.append(f"{interaction_label}: terminal action must be an object")
         rescored_reward = _rescore_terminal_action(
-            response.get("action"),
+            action,
             instance_id=str(expected_instance_id),
             scoring_contract=scoring_contract,
             label=interaction_label,
@@ -2146,6 +2281,13 @@ def _validate_bound_heldout_trace(
         }
     if terminal_count != EXPECTED_OUTCOMES:
         errors.append(f"{label}: held-out trace must contain exactly 20 terminals")
+    if len(terminal_action_sha256s) != EXPECTED_OUTCOMES:
+        errors.append(f"{label}: exactly 20 canonical terminal action hashes required")
+    elif len(set(terminal_action_sha256s)) != 1:
+        errors.append(
+            f"{label}: deterministic qonly contract requires terminal action "
+            "canonical SHA-256 unique count=1"
+        )
     if segment_length != 0:
         errors.append(f"{label}: held-out trace ends inside an instance segment")
 
@@ -2154,7 +2296,12 @@ def _validate_bound_heldout_trace(
         errors.append(
             f"{label}: held-out trace instance_outcomes must contain exactly 20 rows"
         )
-        return [], terminal_signatures
+        return (
+            [],
+            terminal_signatures,
+            terminal_action_sha256s,
+            terminal_action_zero_value_counts,
+        )
     result = trace.get("result")
     if not _exact_keys(
         result,
@@ -2226,7 +2373,12 @@ def _validate_bound_heldout_trace(
             float(result_score), trace_score, rel_tol=0.0, abs_tol=1e-12
         ):
             errors.append(f"{label}: trace result score is not the trace reward mean")
-    return reconstructed, terminal_signatures
+    return (
+        reconstructed,
+        terminal_signatures,
+        terminal_action_sha256s,
+        terminal_action_zero_value_counts,
+    )
 
 
 def _validate_cell(
@@ -2294,7 +2446,12 @@ def _validate_cell(
     if cell.get("evaluation_order_sha256") != expected_order_digest:
         errors.append(f"{label}: evaluation_order_sha256 mismatch")
 
-    trace_outcomes, terminal_signatures = _validate_bound_heldout_trace(
+    (
+        trace_outcomes,
+        terminal_signatures,
+        terminal_action_sha256s,
+        terminal_action_zero_value_counts,
+    ) = _validate_bound_heldout_trace(
         cell=cell,
         pair_id=pair_id,
         label=label,
@@ -2541,6 +2698,10 @@ def _validate_cell(
             "score": score,
             "parse_retries": parse_retries,
             "repairs": repairs,
+            "terminal_action_sha256s": terminal_action_sha256s,
+            "terminal_action_zero_value_counts": (
+                terminal_action_zero_value_counts
+            ),
             "terminal_signatures": terminal_signatures,
         }
 
@@ -2556,12 +2717,19 @@ def _invalid_report(errors: list[str]) -> dict[str, Any]:
         "aggregate": None,
         "bootstrap": None,
         "decision": "invalid",
+        "decision_scope": "invalid",
         "errors": sorted(set(errors)),
         "experiment": EXPERIMENT,
         "limitation": LIMITATION,
         "mechanism_label": MECHANISM_LABEL,
         "pairs": [],
         "protocol": PROTOCOL,
+        "publication_inference": {
+            "effective_n": None,
+            "publication_grade": False,
+            "status": "invalid_not_publication_grade",
+        },
+        "publication_grade": False,
         "schema_version": SCHEMA_VERSION,
         "status": "invalid",
         "threshold_checks": None,
@@ -2605,8 +2773,32 @@ def evaluate(manifest: Any) -> dict[str, Any]:
         errors.append(
             "preregistration_sha256 differs from checked-in preregistration"
         )
+    statistical_addendum_sha256 = manifest.get("statistical_addendum_sha256")
+    try:
+        checked_in_statistical_addendum_sha256 = hashlib.sha256(
+            (ROOT / STATISTICAL_ADDENDUM_FILENAME).read_bytes()
+        ).hexdigest()
+    except OSError as exc:
+        errors.append(f"cannot read checked-in statistical addendum file: {exc}")
+    else:
+        if (
+            checked_in_statistical_addendum_sha256
+            != EXPECTED_STATISTICAL_ADDENDUM_SHA256
+        ):
+            errors.append("checked-in statistical addendum file SHA-256 drift")
+    if not _is_sha256(statistical_addendum_sha256):
+        errors.append("statistical_addendum_sha256 must be a lowercase SHA-256")
+    elif statistical_addendum_sha256 != EXPECTED_STATISTICAL_ADDENDUM_SHA256:
+        errors.append(
+            "statistical_addendum_sha256 differs from checked-in addendum"
+        )
 
     provenance = _validate_provenance(manifest.get("provenance"), errors)
+    if isinstance(provenance, dict) and (
+        provenance.get("statistical_addendum_sha256")
+        != statistical_addendum_sha256
+    ):
+        errors.append("manifest/provenance statistical addendum SHA-256 mismatch")
     corpora = manifest.get("corpora")
     if not isinstance(corpora, dict):
         errors.append("corpora: must be an object")
@@ -2785,6 +2977,46 @@ def evaluate(manifest: Any) -> dict[str, Any]:
                     "pair_id": pair_id,
                     "run_seed": run_seed,
                     "tape_sha256": tape_digest,
+                    "terminal_actions": {
+                        "active": {
+                            "canonical_sha256": sorted(
+                                set(active_outcomes["terminal_action_sha256s"])
+                            ),
+                            "count": len(
+                                active_outcomes["terminal_action_sha256s"]
+                            ),
+                            "unique_count": len(
+                                set(active_outcomes["terminal_action_sha256s"])
+                            ),
+                            "zero_value_count": (
+                                active_outcomes[
+                                    "terminal_action_zero_value_counts"
+                                ][0]
+                                if active_outcomes[
+                                    "terminal_action_zero_value_counts"
+                                ]
+                                else None
+                            ),
+                        },
+                        "lr0": {
+                            "canonical_sha256": sorted(
+                                set(lr0_outcomes["terminal_action_sha256s"])
+                            ),
+                            "count": len(lr0_outcomes["terminal_action_sha256s"]),
+                            "unique_count": len(
+                                set(lr0_outcomes["terminal_action_sha256s"])
+                            ),
+                            "zero_value_count": (
+                                lr0_outcomes[
+                                    "terminal_action_zero_value_counts"
+                                ][0]
+                                if lr0_outcomes[
+                                    "terminal_action_zero_value_counts"
+                                ]
+                                else None
+                            ),
+                        },
+                    },
                 }
             )
 
@@ -2818,6 +3050,9 @@ def evaluate(manifest: Any) -> dict[str, Any]:
         "no_schema_format_regression": schema_gate_passed,
     }
     passed = all(threshold_checks.values())
+    publication_inference = _publication_inference(
+        raw_seed_deltas, internal_gate_passed=passed
+    )
     return {
         "aggregate": {
             "ci_95_lower": ci_lower,
@@ -2827,6 +3062,9 @@ def evaluate(manifest: Any) -> dict[str, Any]:
         },
         "bootstrap": bootstrap,
         "decision": "pass" if passed else "valid_no_go",
+        "decision_scope": (
+            "internal_gate_pass" if passed else "internal_gate_no_go"
+        ),
         "errors": [],
         "experiment": EXPERIMENT,
         "limitation": LIMITATION,
@@ -2838,6 +3076,8 @@ def evaluate(manifest: Any) -> dict[str, Any]:
             "mean_delta_gte": GO_MEAN_DELTA,
         },
         "protocol": PROTOCOL,
+        "publication_inference": publication_inference,
+        "publication_grade": False,
         "schema_version": SCHEMA_VERSION,
         "status": "valid",
         "threshold_checks": threshold_checks,

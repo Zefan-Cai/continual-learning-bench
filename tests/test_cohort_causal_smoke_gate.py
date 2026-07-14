@@ -13,12 +13,15 @@ from run_cohort_causal import (
     PREREGISTERED_PARENT_COMMIT,
     _collector_manifest_path,
     _dataset_projection,
+    _trace_paths,
 )
 from validate_cohort_causal_results import (
+    EXPECTED_STATISTICAL_ADDENDUM_SHA256,
     EXPECTED_SYSTEM_CONFIG,
     LIMITATION,
     MECHANISM_LABEL,
     PROTOCOL,
+    STATISTICAL_ADDENDUM_FILENAME,
     canonical_sha256,
     masked_pair_config_sha256,
     tape_item_sha256,
@@ -45,6 +48,7 @@ def _provenance(grid):
         "model_sha256": "4" * 64,
         "tokenizer_sha256": "5" * 64,
         "evaluation_code_sha256": "6" * 64,
+        "statistical_addendum_sha256": EXPECTED_STATISTICAL_ADDENDUM_SHA256,
         "model_path": grid["collectors"][0]["system_params"]["model_path"],
         "adapter_init_seed": grid["adapter_init_seed"],
     }
@@ -65,6 +69,10 @@ def _integrity():
 
 def _install_valid_smoke(tmp_path: Path):
     grid = json.loads((REPO_ROOT / "grid_cohort_causal_smoke.json").read_text())
+    shutil.copy2(
+        REPO_ROOT / STATISTICAL_ADDENDUM_FILENAME,
+        tmp_path / STATISTICAL_ADDENDUM_FILENAME,
+    )
     for role in ("adaptation", "heldout"):
         relative = Path(grid["datasets"][role]["path"])
         shutil.copytree(REPO_ROOT / relative, tmp_path / relative)
@@ -242,6 +250,21 @@ def _install_valid_smoke(tmp_path: Path):
                 }
             )
             previous_hash = first_after
+        trace_path, _ = _trace_paths(tmp_path, cfg)
+        trace = {
+            "interactions": [
+                {
+                    "observation": {"instance_complete": True},
+                    "query": {
+                        "instance_id": instance_id,
+                        "instance_index": index,
+                    },
+                    "response": {"action": {"fixed_report": arm}},
+                }
+                for index, instance_id in enumerate(instance_ids)
+            ]
+        }
+        _write(trace_path, trace)
         cell = {
             "status": "completed",
             "arm": arm,
@@ -299,6 +322,8 @@ def _install_valid_smoke(tmp_path: Path):
                 "repairs": 0,
             },
             "score": statistics.mean((0.1, 1.1)),
+            "trace_path": str(trace_path),
+            "trace_sha256": canonical_sha256(trace),
         }
         path = tmp_path / cfg["cell_manifest_path"]
         _write(path, cell)
@@ -312,6 +337,96 @@ def test_smoke_gate_accepts_only_nonzero_paired_weight_update(tmp_path):
     assert report["decision"] == "pass"
     assert report["errors"] == []
     assert report["provenance_sha256"] == canonical_sha256(provenance)
+    assert (
+        report["statistical_addendum_sha256"]
+        == EXPECTED_STATISTICAL_ADDENDUM_SHA256
+    )
+    for arm in ("active", "lr0"):
+        assert report["terminal_actions"][arm]["count"] == 2
+        assert report["terminal_actions"][arm]["unique_count"] == 1
+        assert len(report["terminal_actions"][arm]["canonical_sha256"]) == 1
+
+
+def test_smoke_rejects_second_same_arm_terminal_action(tmp_path):
+    grid, provenance, paths = _install_valid_smoke(tmp_path)
+    active = json.loads(paths["active"].read_text())
+    trace_path = Path(active["trace_path"])
+    trace = json.loads(trace_path.read_text())
+    trace["interactions"][1]["response"]["action"] = {"fixed_report": "drift"}
+    _write(trace_path, trace)
+    active["trace_sha256"] = canonical_sha256(trace)
+    _write(paths["active"], active)
+
+    report = validate_smoke(root=tmp_path, grid=grid, provenance=provenance)
+
+    assert report["decision"] == "invalid"
+    assert report["terminal_actions"]["active"]["unique_count"] == 2
+    assert any(
+        "terminal action canonical SHA-256 unique count=1" in error
+        for error in report["errors"]
+    )
+
+
+def test_smoke_reports_fixed_action_zero_fields_without_rejecting(tmp_path):
+    grid, provenance, paths = _install_valid_smoke(tmp_path)
+    for arm in ("active", "lr0"):
+        cell = json.loads(paths[arm].read_text())
+        trace_path = Path(cell["trace_path"])
+        trace = json.loads(trace_path.read_text())
+        for interaction in trace["interactions"]:
+            interaction["response"]["action"] = {"fixed_report": 0.0}
+        _write(trace_path, trace)
+        cell["trace_sha256"] = canonical_sha256(trace)
+        _write(paths[arm], cell)
+
+    report = validate_smoke(root=tmp_path, grid=grid, provenance=provenance)
+
+    assert report["decision"] == "pass"
+    assert report["errors"] == []
+    assert report["terminal_actions"]["active"]["zero_value_count"] == 1
+    assert report["terminal_actions"]["lr0"]["zero_value_count"] == 1
+
+
+def test_smoke_reports_uncanonicalizable_terminal_action(tmp_path):
+    grid, provenance, paths = _install_valid_smoke(tmp_path)
+    active = json.loads(paths["active"].read_text())
+    trace_path = Path(active["trace_path"])
+    trace = json.loads(trace_path.read_text())
+    trace["interactions"][1]["response"]["action"] = {"value": float("nan")}
+    _write(trace_path, trace)
+
+    report = validate_smoke(root=tmp_path, grid=grid, provenance=provenance)
+
+    assert report["decision"] == "invalid"
+    assert report["terminal_actions"]["active"]["canonical_hash_count"] == 1
+    assert any("cannot be canonicalized" in error for error in report["errors"])
+
+
+def test_smoke_rejects_statistical_addendum_provenance_tamper(tmp_path):
+    grid, provenance, _paths = _install_valid_smoke(tmp_path)
+    provenance["statistical_addendum_sha256"] = "0" * 64
+
+    report = validate_smoke(root=tmp_path, grid=grid, provenance=provenance)
+
+    assert report["decision"] == "invalid"
+    assert any(
+        "provenance statistical addendum SHA-256 mismatch" in error
+        for error in report["errors"]
+    )
+
+
+def test_smoke_rejects_checked_in_statistical_addendum_tamper(tmp_path):
+    grid, provenance, _paths = _install_valid_smoke(tmp_path)
+    addendum = tmp_path / STATISTICAL_ADDENDUM_FILENAME
+    addendum.write_bytes(addendum.read_bytes() + b"\n")
+
+    report = validate_smoke(root=tmp_path, grid=grid, provenance=provenance)
+
+    assert report["decision"] == "invalid"
+    assert any(
+        "checked-in statistical addendum SHA-256 drift" in error
+        for error in report["errors"]
+    )
 
 
 def test_smoke_gate_allows_successful_retries_when_active_does_not_regress(tmp_path):

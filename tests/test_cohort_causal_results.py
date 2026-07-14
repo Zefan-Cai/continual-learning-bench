@@ -19,6 +19,7 @@ from validate_cohort_causal_results import (
     EXPECTED_PREREGISTRATION_SHA256,
     EXPECTED_RUN_SEEDS,
     EXPECTED_SAMPLING_RNG_BINDING,
+    EXPECTED_STATISTICAL_ADDENDUM_SHA256,
     EXPECTED_SYSTEM_CONFIG,
     EXPECTED_TASK_CONFIG,
     EXPERIMENT,
@@ -26,7 +27,9 @@ from validate_cohort_causal_results import (
     MECHANISM_LABEL,
     PREREGISTERED_PARENT_COMMIT,
     PROTOCOL,
+    STATISTICAL_ADDENDUM_FILENAME,
     _TERMINAL_RESPONSE_METADATA_KEYS,
+    _exact_zero_value_count,
     _load_checked_in_heldout_scoring_contract,
     _rescore_terminal_action,
     canonical_sha256,
@@ -40,7 +43,9 @@ from validate_cohort_causal_results import (
 
 ROOT = Path(__file__).resolve().parents[1]
 VALIDATOR = ROOT / "validate_cohort_causal_results.py"
-_ACTION_CACHE: dict[tuple[str, float], tuple[dict[str, float], float]] = {}
+_ARM_ACTION_CACHE: dict[
+    float, tuple[dict[str, float], dict[str, float]]
+] = {}
 _TERMINAL_PROMPT = (
     "Provide your survival estimates for all 36 cohorts. "
     "Each field is named {cohort_id}__s12, {cohort_id}__s24, "
@@ -114,12 +119,10 @@ def _scoring_contract(heldout: dict) -> dict:
     return contract
 
 
-def _reference_action(contract: dict, instance_id: str) -> dict[str, float]:
-    variant = instance_id.rsplit(":", 1)[-1]
-    reference = contract["references"][variant]
+def _truth_action(contract: dict) -> dict[str, float]:
     return {
-        f"{cohort_id}__s{horizon}": float(reference[f"survival_{horizon}m"])
-        for cohort_id in contract["ground_truth"]
+        f"{cohort_id}__s{horizon}": float(truth[f"survival_{horizon}m"])
+        for cohort_id, truth in contract["ground_truth"].items()
         for horizon in (12, 24, 36)
     }
 
@@ -138,64 +141,58 @@ def _score_action(contract: dict, instance_id: str, action: dict) -> float:
     return score
 
 
-def _action_for_target_reward(
-    contract: dict, instance_id: str, target: float
-) -> tuple[dict[str, float], float]:
-    """Find a scorer-authentic report whose rounded reward equals target."""
+def _fixed_arm_actions(
+    contract: dict, instance_ids: list[str], delta: float
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Return one fixed action per arm with an exact fixed paired delta.
 
-    target = round(float(target), 6)
-    cache_key = (instance_id, target)
-    if cache_key in _ACTION_CACHE:
-        action, score = _ACTION_CACHE[cache_key]
-        return deepcopy(action), score
-    reference_action = _reference_action(contract, instance_id)
+    References vary by held-out ID, so absolute rewards vary.  The reference
+    term cancels from active-minus-LR0, matching the true greedy qonly contract.
+    """
+
+    target = round(abs(float(delta)), 6)
+    cache_key = round(float(delta), 6)
+    if cache_key in _ARM_ACTION_CACHE:
+        active, lr0 = _ARM_ACTION_CACHE[cache_key]
+        return deepcopy(active), deepcopy(lr0)
+    truth_action = _truth_action(contract)
     if target == 0.0:
-        _ACTION_CACHE[cache_key] = (deepcopy(reference_action), 0.0)
-        return reference_action, 0.0
-    if target > 0.0:
-        endpoint = {
-            f"{cohort_id}__s{horizon}": float(
-                truth[f"survival_{horizon}m"]
-            )
-            for cohort_id, truth in contract["ground_truth"].items()
-            for horizon in (12, 24, 36)
-        }
-    else:
-        endpoint = {field: 1.0 for field in reference_action}
-    endpoint_score = _score_action(contract, instance_id, endpoint)
-    assert (target > 0.0 and endpoint_score >= target) or (
-        target < 0.0 and endpoint_score <= target
-    )
-
+        active, lr0 = truth_action, deepcopy(truth_action)
+        _ARM_ACTION_CACHE[cache_key] = (deepcopy(active), deepcopy(lr0))
+        return active, lr0
+    endpoint = {field: 1.0 for field in truth_action}
     lower = 0.0
     upper = 1.0
-    best_action = reference_action
-    best_score = 0.0
-    for _ in range(64):
+    degraded: dict[str, float] | None = None
+    for _ in range(80):
         weight = (lower + upper) / 2.0
         candidate = {
-            field: reference_action[field]
-            + weight * (endpoint[field] - reference_action[field])
-            for field in reference_action
+            field: truth_action[field]
+            + weight * (endpoint[field] - truth_action[field])
+            for field in truth_action
         }
-        score = _score_action(contract, instance_id, candidate)
-        if abs(score - target) < abs(best_score - target):
-            best_action, best_score = candidate, score
-        if score == target:
-            _ACTION_CACHE[cache_key] = (deepcopy(candidate), score)
-            return candidate, score
-        if target > 0.0:
-            if score < target:
-                lower = weight
-            else:
-                upper = weight
-        elif score > target:
+        degradations = {
+            round(
+                _score_action(contract, instance_id, truth_action)
+                - _score_action(contract, instance_id, candidate),
+                6,
+            )
+            for instance_id in instance_ids
+        }
+        if degradations == {target}:
+            degraded = candidate
+            break
+        if statistics.mean(degradations) < target:
             lower = weight
         else:
             upper = weight
-    assert best_score == target
-    _ACTION_CACHE[cache_key] = (deepcopy(best_action), best_score)
-    return best_action, best_score
+    assert degraded is not None, (delta, degradations)
+    if delta > 0.0:
+        active, lr0 = truth_action, degraded
+    else:
+        active, lr0 = degraded, truth_action
+    _ARM_ACTION_CACHE[cache_key] = (deepcopy(active), deepcopy(lr0))
+    return active, lr0
 
 
 def _tape(
@@ -403,14 +400,16 @@ def _cell(
     if arm == "lr0":
         config["ttt_lr"] = 0.0
         config["reward_pg_lr"] = 0.0
-    target_reward = delta if arm == "active" else 0.0
+    active_action, lr0_action = _fixed_arm_actions(
+        scoring_contract, heldout["canonical_instance_ids"], delta
+    )
+    arm_action = active_action if arm == "active" else lr0_action
     outcomes = []
     trace_outcomes = []
     interactions = []
     for index, instance_id in enumerate(heldout["canonical_instance_ids"]):
-        action, reward = _action_for_target_reward(
-            scoring_contract, instance_id, target_reward
-        )
+        action = deepcopy(arm_action)
+        reward = _score_action(scoring_contract, instance_id, action)
         integrity = _integrity()
         outcomes.append(
             {
@@ -605,6 +604,7 @@ def _manifest(deltas: tuple[float, float, float] = (0.04, 0.05, 0.03)) -> dict:
         "model_sha256": _digest("model"),
         "preregistered_parent_commit": PREREGISTERED_PARENT_COMMIT,
         "source_commit": "a" * 40,
+        "statistical_addendum_sha256": EXPECTED_STATISTICAL_ADDENDUM_SHA256,
         "tokenizer_sha256": _digest("tokenizer"),
     }
     initial_hash = _digest("shared-adapter-initialization")
@@ -653,23 +653,92 @@ def _manifest(deltas: tuple[float, float, float] = (0.04, 0.05, 0.03)) -> dict:
         "mechanism_label": MECHANISM_LABEL,
         "pairs": pairs,
         "preregistration_sha256": EXPECTED_PREREGISTRATION_SHA256,
+        "statistical_addendum_sha256": EXPECTED_STATISTICAL_ADDENDUM_SHA256,
         "protocol": PROTOCOL,
         "provenance": provenance,
         "schema_version": 1,
     }
 
 
-def test_passes_only_complete_positive_preregistered_gate() -> None:
+def test_positive_legacy_gate_is_only_an_internal_screen() -> None:
     report = evaluate(_manifest())
 
     assert report["errors"] == []
     assert report["status"] == "valid"
     assert report["decision"] == "pass"
+    assert report["decision_scope"] == "internal_gate_pass"
+    assert report["publication_grade"] is False
     assert report["aggregate"]["mean_delta"] == 0.04
     assert report["aggregate"]["positive_seeds"] == 3
     assert report["aggregate"]["ci_95_lower"] == 0.03
     assert report["aggregate"]["ci_95_upper"] == 0.05
     assert all(report["threshold_checks"].values())
+    assert report["bootstrap"]["publication_grade"] is False
+    inference = report["publication_inference"]
+    assert inference["status"] == "confirmation_required_not_publication_grade"
+    assert inference["publication_grade"] is False
+    assert inference["internal_screen_status"] == "internal_gate_pass"
+    assert inference["raw_seed_deltas"] == [0.04, 0.05, 0.03]
+    assert inference["effective_n"] == 3
+    assert inference["fixed_scoring_conditions"] == 20
+    assert inference["sample_sd"] == 0.01
+    assert inference["seed_level_t_interval_95"]["df"] == 2
+    assert (
+        inference["seed_level_t_interval_95"][
+            "normality_dependent_descriptive"
+        ]
+        is True
+    )
+    assert inference["exact_sign_test"]["p_value"] == 0.25
+    negative = inference["negative_interpretation"]
+    assert negative["valid_no_go_establishes_zero_or_harm"] is False
+    assert negative["practical_benefit_at_least_0_02_ruled_out"] is False
+    assert negative["harm_established"] is False
+    confirmation = inference["confirmation_contract"]
+    assert confirmation["minimum_new_adaptation_seeds"] == 6
+    assert confirmation["minimum_independent_frozen_dgp_populations"] == 2
+    assert confirmation["seed_to_population_mapping_preregistered_required"] is True
+    for pair in report["pairs"]:
+        for arm in ("active", "lr0"):
+            terminal_actions = pair["terminal_actions"][arm]
+            assert terminal_actions["count"] == 20
+            assert terminal_actions["unique_count"] == 1
+            assert len(terminal_actions["canonical_sha256"]) == 1
+            assert terminal_actions["zero_value_count"] == 0
+
+
+def test_exact_zero_fields_are_reported_not_treated_as_replicates() -> None:
+    assert _exact_zero_value_count({"a": 0.0, "b": -0.0, "c": 0, "d": 0.2}) == 3
+    assert _exact_zero_value_count({"bool_is_not_numeric_zero": False}) == 0
+
+
+def test_fixture_matches_fixed_action_pseudoreplication_contract() -> None:
+    manifest = _manifest()
+    for pair, expected_delta in zip(
+        manifest["pairs"], (0.04, 0.05, 0.03), strict=True
+    ):
+        arm_hashes = {}
+        for arm in ("active", "lr0"):
+            trace = pair[arm]["heldout_trace"]
+            actions = [
+                interaction["response"]["action"]
+                for interaction in trace["interactions"]
+                if interaction["observation"].get("instance_complete") is True
+            ]
+            arm_hashes[arm] = {canonical_sha256(action) for action in actions}
+            rewards = [row["reward"] for row in pair[arm]["heldout_outcomes"]]
+            assert len(arm_hashes[arm]) == 1
+            assert len(set(rewards)) > 1
+        paired_deltas = {
+            round(active["reward"] - lr0["reward"], 6)
+            for active, lr0 in zip(
+                pair["active"]["heldout_outcomes"],
+                pair["lr0"]["heldout_outcomes"],
+                strict=True,
+            )
+        }
+        assert paired_deltas == {expected_delta}
+        assert arm_hashes["active"] != arm_hashes["lr0"]
 
 
 def test_early_submission_segments_are_accepted() -> None:
@@ -822,6 +891,13 @@ def test_valid_no_go_is_distinct_from_invalid() -> None:
     assert report["errors"] == []
     assert report["status"] == "valid"
     assert report["decision"] == "valid_no_go"
+    assert report["decision_scope"] == "internal_gate_no_go"
+    assert report["publication_grade"] is False
+    assert (
+        report["publication_inference"]["internal_screen_status"]
+        == "internal_gate_no_go"
+    )
+    assert report["publication_inference"]["publication_grade"] is False
     assert report["threshold_checks"]["all_3_seed_deltas_gt_0"] is True
     assert report["threshold_checks"]["mean_delta_gte_0_02"] is False
 
@@ -965,6 +1041,24 @@ def test_terminal_action_schema_is_exact_and_independently_scored() -> None:
     assert any("/action: schema mismatch" in error for error in report["errors"])
 
 
+def test_second_terminal_action_hash_fails_pseudoreplication_guard() -> None:
+    manifest = _manifest()
+    cell = manifest["pairs"][0]["active"]
+    second_terminal = cell["heldout_trace"]["interactions"][41]
+    action = second_terminal["response"]["action"]
+    first_field = sorted(action)[0]
+    action[first_field] = min(1.0, float(action[first_field]) + 0.001)
+    cell["trace_sha256"] = canonical_sha256(cell["heldout_trace"])
+
+    report = evaluate(manifest)
+
+    assert report["decision"] == "invalid"
+    assert any(
+        "terminal action canonical SHA-256 unique count=1" in error
+        for error in report["errors"]
+    )
+
+
 def test_embedded_trace_only_tampering_fails_digest_verification() -> None:
     manifest = _manifest()
     trace = manifest["pairs"][0]["active"]["heldout_trace"]
@@ -1060,6 +1154,40 @@ def test_changed_checked_in_preregistration_bytes_fail_closed(
     assert report["decision"] == "invalid"
     assert any(
         "checked-in preregistration file SHA-256 drift" in error
+        for error in report["errors"]
+    )
+
+
+def test_valid_but_wrong_statistical_addendum_hash_fails_closed() -> None:
+    manifest = _manifest()
+    manifest["statistical_addendum_sha256"] = _digest("different-addendum")
+
+    report = evaluate(manifest)
+
+    assert report["decision"] == "invalid"
+    assert any(
+        "statistical_addendum_sha256 differs from checked-in addendum" in error
+        for error in report["errors"]
+    )
+
+
+def test_changed_checked_in_statistical_addendum_bytes_fail_closed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manifest = _manifest()
+    (tmp_path / validator.PREREGISTRATION_FILENAME).write_bytes(
+        (ROOT / validator.PREREGISTRATION_FILENAME).read_bytes()
+    )
+    (tmp_path / STATISTICAL_ADDENDUM_FILENAME).write_bytes(
+        (ROOT / STATISTICAL_ADDENDUM_FILENAME).read_bytes() + b"\n"
+    )
+    monkeypatch.setattr(validator, "ROOT", tmp_path)
+
+    report = evaluate(manifest)
+
+    assert report["decision"] == "invalid"
+    assert any(
+        "checked-in statistical addendum file SHA-256 drift" in error
         for error in report["errors"]
     )
 

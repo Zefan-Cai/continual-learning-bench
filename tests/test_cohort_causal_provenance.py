@@ -29,7 +29,13 @@ def _make_checkout(tmp_path: Path, *, omit: str | None = None) -> Path:
             continue
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"evaluation-file-{index}\n")
+        if relative == provenance.STATISTICAL_ADDENDUM_FILENAME:
+            path.write_bytes(
+                (provenance.ROOT / provenance.STATISTICAL_ADDENDUM_FILENAME)
+                .read_bytes()
+            )
+        else:
+            path.write_text(f"evaluation-file-{index}\n")
     _run(["git", "init", "-q"], cwd=root)
     _run(["git", "config", "user.email", "provenance@example.test"], cwd=root)
     _run(["git", "config", "user.name", "Provenance Test"], cwd=root)
@@ -114,6 +120,20 @@ def test_bundle_is_deterministic_and_matches_runner_contract(tmp_path: Path) -> 
     assert details["environment"]["sha256"] == consumer[
         "environment_lock_sha256"
     ]
+    assert (
+        consumer["statistical_addendum_sha256"]
+        == provenance.EXPECTED_STATISTICAL_ADDENDUM_SHA256
+        == details["statistical_addendum"]["sha256"]
+    )
+
+
+def test_statistical_addendum_tamper_fails_closed(tmp_path: Path) -> None:
+    root = _make_checkout(tmp_path)
+    addendum = root / provenance.STATISTICAL_ADDENDUM_FILENAME
+    addendum.write_bytes(addendum.read_bytes() + b"\n")
+
+    with pytest.raises(RuntimeError, match="statistical addendum bytes"):
+        provenance.hash_statistical_addendum(root)
 
 
 def test_model_tamper_changes_only_content_bound_digest(tmp_path: Path) -> None:
@@ -167,6 +187,20 @@ def test_missing_required_evaluation_file_fails_closed(tmp_path: Path) -> None:
     root = _make_checkout(tmp_path, omit=missing)
 
     with pytest.raises(FileNotFoundError, match="required evaluation code"):
+        provenance.hash_evaluation_code(root)
+
+
+def test_untracked_statistical_addendum_fails_closed(tmp_path: Path) -> None:
+    root = _make_checkout(
+        tmp_path, omit=provenance.STATISTICAL_ADDENDUM_FILENAME
+    )
+    addendum = root / provenance.STATISTICAL_ADDENDUM_FILENAME
+    addendum.write_bytes(
+        (provenance.ROOT / provenance.STATISTICAL_ADDENDUM_FILENAME).read_bytes()
+    )
+    assert _run(["git", "status", "--porcelain=v1"], cwd=root).startswith("?? ")
+
+    with pytest.raises(RuntimeError, match="must be tracked by Git"):
         provenance.hash_evaluation_code(root)
 
 
@@ -342,6 +376,7 @@ def test_runtime_verifier_rejects_dirty_tracked_checkout(tmp_path: Path) -> None
         ("adapter_init_seed", 0),
         ("environment_lock_sha256", "0" * 64),
         ("preregistered_parent_commit", "0" * 40),
+        ("statistical_addendum_sha256", "0" * 64),
     ],
 )
 def test_runtime_verifier_recomputes_non_file_contract_fields(
