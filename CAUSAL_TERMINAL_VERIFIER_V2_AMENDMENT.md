@@ -26,18 +26,28 @@ The exception set is generated only by the source-hash-bound standalone freezer
 copy under the source-commit-qualified `/tmp` transport directory.  The freezer
 uses isolated Python (`-I`), a fixed environment, `/dev/null` stdio, no PTY,
 `setsid`, `ppid=1`, and an exact command line; it waits 30 seconds and requires
-the frozen per-session startup ancestor identities to have disappeared.  It
-records two identical full-procfs snapshots whose `CLOCK_BOOTTIME` timestamps
+the fork-launching parent PID/start identity to have disappeared.  Pluto keeps
+an `sshd`/shell/s6 service hierarchy alive independently of any one command, so
+V2 does not claim that this complete persistent service ancestry terminates.
+Instead, `ppid=1`, a new session/process group, sanitized descriptors, no
+controlling terminal or `/dev/pts` descriptor, and the exact exec boundary prove
+that the freezer itself is detached from the interactive terminal.  It records
+two identical full-procfs snapshots whose `CLOCK_BOOTTIME` timestamps
 are at least one second apart.  Its source hash must equal the freezer source
 dependency bound by the V2 plan, and the freezer PID/start identity itself must
 be gone before the plan can be accepted.
+
+For compatibility, the inventory and receipt wire key remains
+`startup_ancestors`, but V2 contract revision 3 requires it to contain exactly
+one record: the pre-fork Python launcher parent.  It is not an ancestry walk.
 
 Each exception is classified only as a
 `stable_pre_wrapper_cwd_permission_denied_process`: its cwd returned exactly
 `EACCES` or `EPERM`, its identity and non-semantic metadata were stable across
 two snapshots, and it predates the causal wrapper.  This is an evidence label,
-not a claim of platform ownership.  The detached transport mechanically excludes
-its own per-session `ssh`/`sshd`, `sudo`, shell, and launcher ancestry, but procfs
+not a claim of platform ownership.  The detached transport mechanically proves
+that its fork-launching parent has exited, but it does not classify or claim
+termination of the persistent Pluto `sshd`/shell/s6 service ancestry.  Procfs
 permission evidence alone cannot distinguish a fixed platform daemon from a
 different, already-running long-lived operator process.  Deployment therefore
 trusts the platform/orchestrator not to supply such an unrelated process unless
@@ -65,13 +75,24 @@ launcher; each transport copy must be byte-identical to its bound durable
 source.  The launcher itself uses isolated Python (`-I`), always
 forks before `setsid`, closes inherited descriptors, redirects stdio to
 `/dev/null`, proves no `/dev/pts` descriptor or controlling TTY remains, waits
-30 seconds, requires every frozen ephemeral startup ancestor to have gone, and
+30 seconds, requires the frozen fork-launching parent to have gone, and
 publishes a no-overwrite receipt before same-PID `execve` into the exact attester
 argv with an allowlisted environment.  The inventory, launcher, receipt, and
 attester bind the same inventory-baseline boot ID, PID/mount namespace
 identities, procfs mount, `PROC_SUPER_MAGIC`, `/proc/1`, and `/proc/self`
 consistency.  That binding is a continuity proof from freezer onward, not an
 origin attestation for the earlier causal wrapper.
+
+Operationally, the freezer and launcher must each be invoked from a fresh SSH
+connection with client multiplexing disabled (`-S none`, `ControlMaster=no`,
+`ControlPath=none`, and `ControlPersist=no`).  The remote evidence cannot
+mechanically attest those client-side flags, and V2 therefore does not claim
+that the complete SSH service ancestry has exited.  This is an explicit
+deployment trust condition.  A schema-bound persistent-service lineage suffix
+would be required to make that stronger claim.  Any still-running process whose
+command line or cwd references the causal checkout, complete durable attempt
+root, or artifact root remains fatal in the freezer and attester full-procfs
+scans regardless of this service-ancestry boundary.
 
 The process audit is explicitly a point-in-time `cmdline`/`cwd` absence proof at
 the registered samples.  It does not claim continuous absence between samples

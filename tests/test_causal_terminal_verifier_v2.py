@@ -778,7 +778,9 @@ def _write_stat_only(
     )
 
 
-def test_transport_constants_and_ephemeral_ancestor_boundary(tmp_path: Path) -> None:
+def test_transport_constants_and_detached_parent_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     assert (
         launcher.RECEIPT_KEYS == seal.DETACHED_RECEIPT_KEYS == att.DETACHED_RECEIPT_KEYS
     )
@@ -794,15 +796,30 @@ def test_transport_constants_and_ephemeral_ancestor_boundary(tmp_path: Path) -> 
 
     proc = tmp_path / "proc"
     proc.mkdir()
-    _write_stat_only(proc, pid=300, ppid=200, start_ticks=30, comm="shell")
-    _write_stat_only(proc, pid=200, ppid=100, start_ticks=20, comm="sshd-session")
-    _write_stat_only(proc, pid=100, ppid=1, start_ticks=10, comm="sshd-listener")
-    expected = [
-        {"comm_sha256": _sha(b"shell"), "pid": 300, "start_ticks": 30},
-        {"comm_sha256": _sha(b"sshd-session"), "pid": 200, "start_ticks": 20},
-    ]
-    assert launcher._startup_ancestors(start_pid=300, proc_root=proc) == expected
-    assert freezer._startup_ancestors(start_pid=300, proc_root=proc) == expected
+    _write_stat_only(proc, pid=300, ppid=100, start_ticks=30, comm="python3.10")
+    _write_stat_only(proc, pid=100, ppid=1, start_ticks=10, comm="sshd-service")
+    parent = {
+        "comm_sha256": _sha(b"python3.10"),
+        "pid": 300,
+        "start_ticks": 30,
+    }
+    expected = [parent]
+    monkeypatch.setattr(launcher, "_self_ancestor_record", lambda: parent)
+    monkeypatch.setattr(freezer, "_self_ancestor_record", lambda: parent)
+    assert launcher._detached_parent_records() == expected
+    assert freezer._detached_parent_records() == expected
+
+    extra = {"comm_sha256": _sha(b"sshd"), "pid": 200, "start_ticks": 20}
+    with pytest.raises(launcher.DetachedLaunchError, match="exactly one"):
+        launcher._assert_startup_ancestors_gone([parent, extra], proc_root=proc)
+    with pytest.raises(freezer.FreezerError, match="exactly one"):
+        freezer._assert_startup_ancestors_gone([parent, extra], proc_root=proc)
+    with pytest.raises(freezer.FreezerError, match="ancestor payload"):
+        freezer._decode_ancestors(seal.canonical_bytes([parent, extra]).decode())
+    with pytest.raises(seal.ExecutionSealV2Error, match="exactly one"):
+        seal._validate_ancestor_records([parent, extra], label="test parent")
+    with pytest.raises(att.AttestationV2Error, match="exactly one"):
+        att._assert_ancestors_gone([parent, extra], proc_root=proc)
 
     # comm is audit metadata, not process identity.  The same PID/start may
     # rename itself through exec/prctl and must still fail every gone check.
@@ -816,12 +833,11 @@ def test_transport_constants_and_ephemeral_ancestor_boundary(tmp_path: Path) -> 
     with pytest.raises(att.AttestationV2Error, match="remains live"):
         att._assert_ancestors_gone(expected, proc_root=proc)
 
-    for pid in (300, 200):
-        (proc / str(pid) / "stat").unlink()
-        (proc / str(pid)).rmdir()
+    (proc / "300/stat").unlink()
+    (proc / "300").rmdir()
     launcher._assert_startup_ancestors_gone(expected, proc_root=proc)
     freezer._assert_startup_ancestors_gone(expected, proc_root=proc)
-    assert (proc / "100/stat").exists(), "persistent pid-1 listener stays excluded"
+    assert (proc / "100/stat").exists(), "persistent service ancestry stays excluded"
 
 
 def test_freezer_pid_start_identity_must_be_gone_before_plan(tmp_path: Path) -> None:

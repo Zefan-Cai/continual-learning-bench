@@ -142,6 +142,8 @@ def _stdio_and_pts_state() -> tuple[list[str], bool]:
 def _assert_ancestors_gone(
     records: list[dict[str, Any]], *, proc_root: Path = Path("/proc")
 ) -> None:
+    if len(records) != 1:
+        raise AttestationV2Error("receipt needs exactly one detached launcher parent")
     seen: set[int] = set()
     for record in records:
         if (
@@ -163,7 +165,7 @@ def _assert_ancestors_gone(
         # PID plus start_ticks is the stable process identity; comm may change
         # after exec/prctl while the same startup ancestor remains live.
         if start_ticks == record["start_ticks"]:
-            raise AttestationV2Error("startup SSH ancestor remains live")
+            raise AttestationV2Error("detached launcher parent remains live")
 
 
 def _current_runtime_namespace() -> dict[str, Any]:

@@ -2,9 +2,10 @@
 """Freeze the outcome-blind procfs cwd-exception inventory for verifier V2.
 
 This standalone transport utility reads only the launch expectation and Linux
-procfs.  It daemonizes from /tmp, waits for the SSH ancestry to disappear,
-takes two stable snapshots at least one second apart, and canonically publishes
-only process identity/hashes.  It never stores or prints raw argv or cgroups.
+procfs.  It daemonizes from /tmp, waits through a detachment grace period and
+requires its fork-launching parent to disappear, takes two stable snapshots at
+least one second apart, and canonically publishes only process identity/hashes.
+It never stores or prints raw argv or cgroups.
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ from typing import Any
 PROTOCOL = "cohort_causal_procfs_cwd_exception_inventory_v1"
 OUTPUT_FILENAME = "CAUSAL_TERMINAL_VERIFIER_PROCFS_EXCEPTION_INVENTORY_V1.json"
 PROC_SUPER_MAGIC = 0x9FA0
-DISCONNECT_GRACE_SECONDS = 30
+DETACHMENT_GRACE_SECONDS = 30
 SNAPSHOT_INTERVAL_SECONDS = 1
 EXPECTED_PYTHON_PATH = "/usr/bin/python3.10"
 EXPECTED_PYTHON_VERSION = "3.10.12"
@@ -309,33 +310,21 @@ def _runtime_namespace(proc_root: Path) -> dict[str, Any]:
     }
 
 
-def _startup_ancestors(
-    *, start_pid: int | None = None, proc_root: Path = Path("/proc")
-) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
-    seen: set[int] = set()
-    pid = os.getppid() if start_pid is None else start_pid
-    while pid != 1:
-        if pid <= 0 or pid in seen:
-            raise FreezerError("freezer startup ancestor chain is invalid")
-        seen.add(pid)
-        ppid, start_ticks, comm_sha = _parse_stat(
-            (proc_root / str(pid) / "stat").read_bytes()
-        )
-        if ppid == 1:
-            # Exclude the persistent pid-1-owned listener/service trust boundary.
-            break
-        records.append(
-            {"comm_sha256": comm_sha, "pid": pid, "start_ticks": start_ticks}
-        )
-        pid = ppid
-    return records
-
-
 def _self_ancestor_record() -> dict[str, Any]:
     pid = os.getpid()
     _, start_ticks, comm_sha = _parse_stat(Path("/proc/self/stat").read_bytes())
     return {"comm_sha256": comm_sha, "pid": pid, "start_ticks": start_ticks}
+
+
+def _detached_parent_records() -> list[dict[str, Any]]:
+    """Bind only the fork-launching parent whose disappearance gives ppid=1.
+
+    Pluto's SSH service is supervised by a persistent sshd/bash/s6 hierarchy.
+    That hierarchy is not an interactive descriptor after setsid/fd sanitation,
+    and V2 does not claim that the complete service ancestry has terminated.
+    """
+
+    return [_self_ancestor_record()]
 
 
 def _decode_ancestors(payload: str) -> list[dict[str, Any]]:
@@ -345,7 +334,7 @@ def _decode_ancestors(payload: str) -> list[dict[str, Any]]:
         raise FreezerError("freezer ancestor payload is not JSON") from exc
     if (
         not isinstance(value, list)
-        or not value
+        or len(value) != 1
         or payload.encode() != _canonical(value)
     ):
         raise FreezerError("freezer ancestor payload is not canonical")
@@ -373,6 +362,8 @@ def _decode_ancestors(payload: str) -> list[dict[str, Any]]:
 def _assert_startup_ancestors_gone(
     records: list[dict[str, Any]], *, proc_root: Path = Path("/proc")
 ) -> None:
+    if len(records) != 1:
+        raise FreezerError("freezer needs exactly one detached launcher parent")
     for record in records:
         try:
             _, start_ticks, _ = _parse_stat(
@@ -383,7 +374,7 @@ def _assert_startup_ancestors_gone(
         # A process can change comm through exec/prctl without changing its
         # identity.  Treat matching PID+start_ticks as still live.
         if start_ticks == record["start_ticks"]:
-            raise FreezerError("freezer startup SSH ancestor remains live")
+            raise FreezerError("freezer detached launcher parent remains live")
 
 
 def _sanitize_file_descriptors() -> list[str]:
@@ -456,7 +447,7 @@ def _expected_child_argv(
 
 def _spawn_detached_child(*, expectation: Path, output: Path) -> None:
     source = Path(__file__).absolute()
-    ancestors = [_self_ancestor_record(), *_startup_ancestors()]
+    ancestors = _detached_parent_records()
     ancestors_json = _canonical(ancestors).decode("utf-8")
     child = os.fork()
     if child != 0:
@@ -493,7 +484,7 @@ def _verify_detached_child(
         != EXPECTED_PYTHON_VERSION
     ):
         raise FreezerError("freezer exact exec boundary differs")
-    time.sleep(DISCONNECT_GRACE_SECONDS)
+    time.sleep(DETACHMENT_GRACE_SECONDS)
     _assert_startup_ancestors_gone(ancestors)
     pid, ppid, start_ticks, tty_nr = _transport_identity()
     clock_ticks = os.sysconf("SC_CLK_TCK")
@@ -508,7 +499,7 @@ def _verify_detached_child(
         or Path.cwd() != Path("/tmp")
         or stdio_targets != ["/dev/null", "/dev/null", "/dev/null"]
         or _uptime_ticks(clock_ticks) - start_ticks
-        < DISCONNECT_GRACE_SECONDS * clock_ticks
+        < DETACHMENT_GRACE_SECONDS * clock_ticks
     ):
         raise FreezerError("freezer detached transport proof did not close")
     return {
@@ -696,7 +687,7 @@ def main() -> None:
     try:
         source = Path(__file__).absolute()
         # Freeze the exact transport source at detached-child entry, before
-        # the disconnect wait or procfs snapshots.  The same bytes are checked
+        # the detachment grace or procfs snapshots.  The same bytes are checked
         # again at freeze entry and immediately before publication.
         source_raw_at_entry = _read_stable(source)
         proof = _verify_detached_child(

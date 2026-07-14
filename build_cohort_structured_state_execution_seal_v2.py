@@ -256,25 +256,29 @@ PROCESS_AUDIT_KEYS = frozenset(
 DETACHED_LAUNCH_CONTRACT = {
     "attester_environment_exact_allowlist": True,
     "attester_argv_source": "execution_plan.invocations.attester.argv",
+    "deployment_requires_ssh_multiplexing_disabled": True,
     "detached_parent_pid": 1,
+    "detached_launcher_parent_gone_required": True,
     "exception_platform_origin_mechanically_proven": False,
     "exception_scope": "stable_pre_wrapper_cwd_eacces_or_eperm_only",
     "forbid_runtime_namespace_drift_before_attestation_completion": True,
+    "full_ssh_service_ancestry_gone_mechanically_proven": False,
     "launcher_python_isolated": True,
     "launcher_cwd": "/tmp",
     "launcher_wait_cmdline_contains_attempt_path": False,
-    "minimum_disconnect_grace_seconds": 30,
+    "minimum_detachment_grace_seconds": 30,
     "namespace_continuity_from_inventory_through_attestation_required": True,
     "namespace_origin_trust_assumption": "freezer_launched_by_operator_in_original_pluto_default_container_namespace",
     "outcome_blind": True,
-    "protocol": "cohort_causal_terminal_verifier_v2_detached_launch_contract_v2",
-    "require_interactive_ssh_disconnected": True,
+    "persistent_ssh_service_ancestry_outside_terminal_detachment_proof": True,
+    "protocol": "cohort_causal_terminal_verifier_v2_detached_launch_contract_v3",
+    "require_interactive_ssh_disconnected": False,
     "require_no_controlling_tty": True,
     "require_no_pts_fds": True,
-    "require_startup_ancestors_gone": True,
     "require_stdio_devnull": True,
     "receipt_same_pid_exec": True,
-    "schema_version": 2,
+    "schema_version": 3,
+    "ssh_multiplexing_disabled_mechanically_proven": False,
     "status": "registered",
     "transport_only_no_scientific_authority": True,
     "wrapper_namespace_origin_mechanically_proven": False,
@@ -441,8 +445,10 @@ def _parse_proc_stat_for_ancestor(payload: bytes) -> tuple[int, str]:
 
 
 def _validate_ancestor_records(value: Any, *, label: str) -> list[dict[str, Any]]:
-    if not isinstance(value, list) or not value:
-        raise ExecutionSealV2Error(f"{label} must be a non-empty list")
+    if not isinstance(value, list) or len(value) != 1:
+        raise ExecutionSealV2Error(
+            f"{label} must contain exactly one detached launcher parent"
+        )
     seen: set[int] = set()
     records: list[dict[str, Any]] = []
     for index, raw_record in enumerate(value):

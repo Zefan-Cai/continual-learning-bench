@@ -3,9 +3,10 @@
 
 The launcher is deployed under a source-commit-qualified directory in /tmp.
 Its command line contains only /tmp paths and a delay.  It changes cwd to /tmp,
-waits for the interactive SSH ancestry to disappear, publishes a canonical
-no-overwrite receipt, and execs the exact plan-bound attester argv.  It has no
-scientific authority and never opens efficacy-bearing files.
+waits through a detachment grace period and requires its fork-launching parent
+to disappear, publishes a canonical no-overwrite receipt, and execs the exact
+plan-bound attester argv.  It has no scientific authority and never opens
+efficacy-bearing files.
 """
 
 from __future__ import annotations
@@ -204,32 +205,13 @@ def _proc_identity() -> tuple[int, int, int, int, str]:
     return os.getpid(), ppid, start_ticks, tty_nr, comm_sha
 
 
-def _startup_ancestors(
-    *, start_pid: int | None = None, proc_root: Path = Path("/proc")
-) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
-    seen: set[int] = set()
-    pid = os.getppid() if start_pid is None else start_pid
-    while pid != 1:
-        if pid <= 0 or pid in seen:
-            raise DetachedLaunchError("startup ancestor chain is invalid")
-        seen.add(pid)
-        raw = (proc_root / str(pid) / "stat").read_bytes()
-        ppid, start_ticks, _, comm_sha = _parse_stat(raw)
-        if ppid == 1:
-            # The persistent pid-1-owned listener/service is the trust boundary,
-            # not part of the per-session SSH/shell/sudo ancestry that must die.
-            break
-        records.append(
-            {"comm_sha256": comm_sha, "pid": pid, "start_ticks": start_ticks}
-        )
-        pid = ppid
-    return records
-
-
 def _assert_startup_ancestors_gone(
     records: list[dict[str, Any]], *, proc_root: Path = Path("/proc")
 ) -> None:
+    if len(records) != 1:
+        raise DetachedLaunchError(
+            "transport needs exactly one detached launcher parent"
+        )
     for record in records:
         try:
             _, start_ticks, _, _ = _parse_stat(
@@ -240,12 +222,23 @@ def _assert_startup_ancestors_gone(
         # A process can change comm through exec/prctl without changing its
         # identity.  Treat matching PID+start_ticks as still live.
         if start_ticks == record["start_ticks"]:
-            raise DetachedLaunchError("interactive startup ancestor is still live")
+            raise DetachedLaunchError("detached launcher parent is still live")
 
 
 def _self_ancestor_record() -> dict[str, Any]:
     pid, _, start_ticks, _, comm_sha = _proc_identity()
     return {"comm_sha256": comm_sha, "pid": pid, "start_ticks": start_ticks}
+
+
+def _detached_parent_records() -> list[dict[str, Any]]:
+    """Bind only the fork-launching parent whose disappearance gives ppid=1.
+
+    The persistent Pluto sshd/bash/s6 service hierarchy is outside this proof.
+    Terminal detachment is instead established by ppid=1, setsid, fd sanitation,
+    no tty/pts, the exact exec boundary, and the downstream full procfs scan.
+    """
+
+    return [_self_ancestor_record()]
 
 
 def _sanitize_file_descriptors() -> list[str]:
@@ -367,7 +360,7 @@ def launch(*, handoff_path: Path, delay_seconds: int) -> None:
         "/tmp/"
     ):
         raise DetachedLaunchError("handoff must use a normalized /tmp path")
-    startup_ancestors = [_self_ancestor_record(), *_startup_ancestors()]
+    startup_ancestors = _detached_parent_records()
     child_pid = os.fork()
     if child_pid != 0:
         os._exit(0)
@@ -483,7 +476,7 @@ def launch(*, handoff_path: Path, delay_seconds: int) -> None:
         or Path.cwd() != Path("/tmp")
         or observed_age_ticks < delay_seconds * clock_ticks
     ):
-        raise DetachedLaunchError("SSH disconnect/cwd/age proof did not close")
+        raise DetachedLaunchError("detachment/cwd/age proof did not close")
 
     # Recheck every transport binding immediately before receipt publication.
     if (
@@ -491,7 +484,7 @@ def launch(*, handoff_path: Path, delay_seconds: int) -> None:
         or _sha(_read_stable(plan_path)) != _sha(plan_raw)
         or _sha(_read_stable(self_path)) != launcher_sha
     ):
-        raise DetachedLaunchError("transport binding drifted during disconnect wait")
+        raise DetachedLaunchError("transport binding drifted during detachment grace")
     receipt_path = Path(handoff["receipt_path"])
     receipt = {
         "clock_ticks_per_second": clock_ticks,
