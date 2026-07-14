@@ -1,0 +1,11 @@
+Slide 1: source slide 1 duplicated. Title/subtitle rewritten. Added fixed footer in the bottom safe zone because the user requires provenance on every page.
+Slide 2: source slide 13 duplicated. Title, bullet frame, and inherited 4 x 3 table rewritten. Added fixed footer.
+Slide 3: source slide 10 duplicated. Title, interpretation frame, and inherited 3 x 3 table rewritten and reflowed. Added one source-styled comparator-gate note in the existing lower white content zone. Added fixed footer.
+Slide 4: source slide 29 duplicated. Title and body rewritten with shorter staged mechanism diagnosis. Added fixed footer.
+Slide 5: source slide 27 duplicated. Title/body/table rewritten; empty body placeholder deleted; bottom table moved upward and shortened to avoid the required footer. Added fixed footer.
+Slide 6: source slide 39 duplicated. Title and inherited 4 x 8 table rewritten and merged into a four-column metadata-only pairing-integrity table. Added one source-styled metadata/blindness note below the table. Added fixed footer.
+Slide 7: source slide 39 duplicated. Title and inherited 4 x 8 table rewritten and merged into a six-column historical-audit table. Added one source-styled hypothesis/selection footnote below the table. Added fixed footer.
+Slide 8: source slide 27 duplicated. Title/body/table rewritten; empty body placeholder deleted; bottom table moved upward and shortened to avoid the required footer. Added fixed footer.
+Slide 9: source slide 28 duplicated. Title and inherited 7 x 4 table rewritten; empty body placeholder deleted. Added the exact source-styled resource ask in the existing lower white content zone. Added fixed footer.
+
+No source typography, palette, master, layout, or brand chrome is replaced. No blank slides, parallel template rebuilds, or unrelated template graphics are added.

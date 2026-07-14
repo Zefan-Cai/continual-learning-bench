@@ -1,0 +1,39 @@
+{
+  "schema": "ttt-rl.pptx-qa/v1",
+  "reportId": "ttt-rl-progress-2026-07-14",
+  "asOf": "2026-07-14 12:34:25 PDT",
+  "checkedAt": "2026-07-14T19:45:28.363Z",
+  "slideCount": 9,
+  "checks": {
+    "templatePlan": {
+      "status": "pass",
+      "issueCount": 0,
+      "sourceSlideCount": 57
+    },
+    "templateFidelity": {
+      "status": "pass",
+      "issueCount": 0
+    },
+    "overflowAndBounds": {
+      "status": "pass",
+      "toolResult": "No overflow detected"
+    },
+    "visualReview": {
+      "status": "pass",
+      "slidesReviewedFullSize": 9,
+      "contactSheet": "pptx_qa_contact_sheet.png"
+    },
+    "emptySlidePlaceholders": {
+      "status": "pass",
+      "countsBySlide": [0, 0, 0, 0, 0, 0, 0, 0, 0]
+    },
+    "pptxZipIntegrity": {
+      "status": "pass"
+    },
+    "blindnessBoundary": {
+      "status": "pass",
+      "partialEfficacyReadOrShown": false,
+      "evidenceState": "UNPROVEN / FORMAL RUNNING BLIND"
+    }
+  }
+}

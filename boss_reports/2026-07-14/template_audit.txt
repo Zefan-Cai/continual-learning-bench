@@ -1,0 +1,30 @@
+SOURCE
+/Users/zcai/Downloads/pre-example/ablm-chinchilla law(1).pptx
+SHA-256: 63b54b485537be9728e9b87e4c37f3137e5f17bd0ed7c4c9c42c1b7e8e371740
+
+COMPLETE INVENTORY
+57 slides were rendered and inspected. The deck is 16:9 at 960 x 540 px and uses the simple-light-2 master, a white background, Arial/Roboto typography, black or gray text, thin black tables, and sparse color used only for experimental status. Slides 1-13 cover infrastructure, 14-18 allocation, 19-25 repetition, 26-36 validity and prediction, and 37-56 operational appendix; slide 57 is blank.
+
+REUSABLE FRAMES SELECTED
+- Slide 1: minimal centered title and subtitle.
+- Slide 13: claim title, short bullets, and 4 x 3 decision table.
+- Slide 10: claim title, interpretation text, and 3 x 3 gate table.
+- Slide 29: staged diagnosis in one body frame.
+- Slide 27: concern / investigation / conclusion body plus 3 x 4 audit table.
+- Slide 39: 4 x 8 matrix table.
+- Slide 28: 7 x 4 roadmap table.
+
+TYPOGRAPHY AND SPACING
+Inherited titles, text boxes, tables, master, and white background retain the source deck's visual grammar. Copy is shortened to fit inherited frames. Four clarification text boxes use the same Arial typography in existing white safe zones on slides 3, 6, 7, and 9. No alternate template, logo, or decorative asset is introduced.
+
+PLACEHOLDERS
+Source slides 27 and 28 include empty inherited body placeholders. Each duplicated instance explicitly deletes that placeholder. No empty title, body, footer, date, or slide-number placeholder may remain in the exported PPTX.
+
+INSERTION CONTRACT
+Every output page is a duplicate of an inspected source slide. No blank slide is created. A user-required fixed footer is added in the bottom safe zone: report date, research/causal commit, attempt, evidence state, and page number. Four plain clarification text boxes are added inside existing white content zones: the gated comparator note (slide 3), metadata-only liveness note (slide 6), historical-audit footnote (slide 7), and exact resource ask (slide 9). These additions use source typography and do not replace template chrome. On source-slide-27 copies, the inherited bottom table is moved upward and shortened to preserve the footer zone.
+
+EVIDENCE CONTRACT
+The deck is explicitly UNPROVEN / FORMAL RUNNING BLIND. Partial efficacy is neither read nor shown. Formal-run material is metadata-only liveness: all three tapes sealed and six matched active/LR0 cells running blind as of 2026-07-14 12:34:25 PDT. Historical Cohort bonenv/full evidence is labeled exploratory and separated from the current qonly formal mechanism. The private boundary is labeled audited fail-closed scaffolding with provider_available=false, not production-ready.
+
+OMITTED SOURCE MATERIAL
+All unselected source slides are omitted because they are raw lab notes, unrelated antibody-scaling content, dense appendix material, overlapping composites, or empty pages. Their content is not imported as evidence; only the seven selected visual frames above are cloned.

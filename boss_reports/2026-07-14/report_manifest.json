@@ -1,0 +1,138 @@
+{
+  "schema": "ttt-rl.boss-report-manifest/v1",
+  "reportId": "ttt-rl-progress-2026-07-14",
+  "asOf": "2026-07-14 12:34:25 PDT",
+  "evidenceState": "UNPROVEN / FORMAL RUNNING BLIND",
+  "formalRunStatus": "All 3 tapes sealed; 6 paired active/LR0 cells running blind",
+  "researchCommit": "d9346b8",
+  "causalCodeCommit": "1caf142f6ce611da8da8691d4c336388a4c3c4b3",
+  "attempt": "attempt-002",
+  "historicalAuditArtifactSha256": "7b3163cb660e73c7c70f757565667fbdf830e7f34cd628549d2841fc443e1098",
+  "template": {
+    "path": "/Users/zcai/Downloads/pre-example/ablm-chinchilla law(1).pptx",
+    "sha256": "63b54b485537be9728e9b87e4c37f3137e5f17bd0ed7c4c9c42c1b7e8e371740",
+    "bytes": 5306404,
+    "usage": "exclusive visual source for the inherited-slide PowerPoint",
+    "sourceSlides": [1, 13, 10, 29, 27, 39, 39, 27, 28]
+  },
+  "artifacts": [
+    {
+      "path": "../README.md",
+      "role": "cadence contract",
+      "status": "verified",
+      "sha256": "c235c1afa0e957ee56e458ad80bbf78eca56498e46e441004e495105094049bf",
+      "bytes": 1544
+    },
+    {
+      "path": "report_data.json",
+      "role": "single factual source",
+      "status": "verified",
+      "sha256": "845fd97ad40cb72e3c54a10d5c341f4a6e861d4dd5ff161295af2cdff1c4a567",
+      "bytes": 5920
+    },
+    {
+      "path": "generate_html.mjs",
+      "role": "reusable HTML generator",
+      "status": "verified",
+      "sha256": "2665a80f47ad16cef004eba5ff3a5b6638f47eb8bd69a9cc5d60c4d7e2ee6a8b",
+      "bytes": 12784
+    },
+    {
+      "path": "ttt_rl_progress_2026-07-14.html",
+      "role": "primary self-contained report",
+      "contentType": "text/html; charset=utf-8",
+      "status": "verified",
+      "sha256": "d87bd0184c3eb480fd6dd4fd50570476bffeae4c2ce599e8fe44adcef5d044c1",
+      "bytes": 13409
+    },
+    {
+      "path": "generate_pptx.mjs",
+      "role": "reusable inherited-slide deck generator",
+      "status": "verified",
+      "sha256": "db614a039c5dc814dd7a112d5d3bb9341b28102463f08ecb5dad905a9417a0de",
+      "bytes": 18325
+    },
+    {
+      "path": "template_starter_9slides.pptx",
+      "role": "reusable nine-slide inherited template starter",
+      "status": "verified",
+      "sha256": "c1b4734ab2b7a48b5cfc5a55719cff3507e79b66d6db32e299d3e60c7ed550f4",
+      "bytes": 365060
+    },
+    {
+      "path": "template_frame_map.json",
+      "role": "source-slide and edit-target map",
+      "status": "verified",
+      "sha256": "35fd53dbe8b67ffe5786b2ad5e2ee444986bd39173fdfdfddb681882c407f8ac",
+      "bytes": 8272
+    },
+    {
+      "path": "template_audit.txt",
+      "role": "complete source-template audit",
+      "status": "verified",
+      "sha256": "cadbfbc2dbc1cbf472c5d82c0b1ae629f1757fa7d4f94dcdeb50ea24bb6604f1",
+      "bytes": 3020
+    },
+    {
+      "path": "deviation_log.txt",
+      "role": "per-slide inherited-frame deviation log",
+      "status": "verified",
+      "sha256": "b27ab71ddb28f9da5f8f743e0fc7c98c37fb5e26c97b4e6998eb0cec5f7ad298",
+      "bytes": 1829
+    },
+    {
+      "path": "pptx_qa_summary.json",
+      "role": "machine-readable PowerPoint QA receipt",
+      "status": "verified",
+      "sha256": "1423f55bca40f0d81933e8d56b6e9b0cf362075d16fa8d2c91577164e21241a5",
+      "bytes": 948
+    },
+    {
+      "path": "pptx_qa_contact_sheet.png",
+      "role": "all-slide visual QA contact sheet",
+      "contentType": "image/png",
+      "status": "verified",
+      "sha256": "0977601020f72e1beeec0a02dfda0c79521504da6ed81472f41bef226286bb6e",
+      "bytes": 406999
+    },
+    {
+      "path": "ttt_rl_progress_2026-07-14.pptx",
+      "role": "nine-slide boss milestone deck",
+      "contentType": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "status": "verified",
+      "sha256": "145c1f2355c4d8745145c770158581bbd25937341a98bf380848e06bcdce1a74",
+      "bytes": 365341
+    }
+  ],
+  "qa": {
+    "html": {
+      "singleFile": true,
+      "externalDependencies": 0,
+      "headlessChromeRender": "pass",
+      "requiredStatusPresent": true,
+      "latestAsOfPresent": true,
+      "partialEfficacyAbsent": true,
+      "correctedQonlyLanguage": "407/670 aggregated configuration families within +/-0.005; 249/670 exact zero",
+      "historicalLeadSeparatedFromCurrentFormal": true
+    },
+    "pptx": {
+      "checkedAt": "2026-07-14T19:45:28.363Z",
+      "slides": 9,
+      "slidesTest": "pass; no overflow detected",
+      "visualReview": "9/9 full-size slides pass",
+      "templatePlan": "pass; 0 issues",
+      "templateFidelity": "pass; 0 issues",
+      "emptySlidePlaceholders": "0 on every slide",
+      "zipIntegrity": "pass",
+      "contactSheet": "pptx_qa_contact_sheet.png"
+    }
+  },
+  "claimBoundaries": [
+    "No partial formal efficacy was read, displayed, summarized, or inferred.",
+    "Tape sealing and paired-cell liveness are metadata-only and not efficacy results.",
+    "Historical bonenv/full Cohort evidence is exploratory and not the current qonly formal configuration.",
+    "The private boundary is audited fail-closed scaffolding with provider_available=false, not production-ready.",
+    "No CLBench task currently has confirmed causal TTT-RL advantage."
+  ],
+  "resourceAsk": "Keep the current A100 40G job alive until attempt sealing; no additional GPU allocation and no broad sweep."
+}

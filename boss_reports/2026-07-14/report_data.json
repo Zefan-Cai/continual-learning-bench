@@ -1,0 +1,204 @@
+{
+  "reportDate": "2026-07-14",
+  "asOf": "2026-07-14 12:34:25 PDT",
+  "title": "TTT-RL on CLBench: Causal Advantage Evaluation",
+  "status": "UNPROVEN / FORMAL RUNNING BLIND",
+  "researchCommit": "d9346b8",
+  "causalCodeCommit": "1caf142f6ce611da8da8691d4c336388a4c3c4b3",
+  "attempt": "attempt-002",
+  "formalRun": {
+    "wrapperPid": 34747,
+    "wrapperStatus": "alive",
+    "gpuModel": "A100 40G",
+    "collectors": [
+      {
+        "seed": "01",
+        "status": "tape-sealed (metadata only)",
+        "pid": null,
+        "gpu": "collector context released",
+        "memoryMiB": 0,
+        "cpu": "clean-complete",
+        "logBytes": 103714,
+        "traceBytes": 5308049,
+        "tapeBytes": 2032883,
+        "manifestBytes": 8007,
+        "artifactContentOpened": false
+      },
+      {
+        "seed": "02",
+        "status": "tape-sealed (metadata only)",
+        "pid": null,
+        "gpu": "GPU 2 released",
+        "memoryMiB": 0,
+        "cpu": "clean exit",
+        "logBytes": 103714,
+        "traceBytes": 5307961,
+        "tapeBytes": 2032676,
+        "manifestBytes": 8007,
+        "artifactContentOpened": false
+      },
+      {
+        "seed": "03",
+        "status": "tape-sealed (metadata only)",
+        "pid": null,
+        "gpu": "GPU 3 released",
+        "memoryMiB": 0,
+        "cpu": "clean exit",
+        "logBytes": 103715,
+        "traceBytes": 5307917,
+        "tapeBytes": 2032656,
+        "manifestBytes": 8007,
+        "artifactContentOpened": false
+      }
+    ],
+    "pairedCells": [
+      {
+        "seed": "01",
+        "arm": "active",
+        "pid": 123511,
+        "gpu": "GPU 0",
+        "memoryMiB": 17256,
+        "cpu": "~244-264%",
+        "processState": "R<l",
+        "status": "running blind"
+      },
+      {
+        "seed": "01",
+        "arm": "LR0",
+        "pid": 123516,
+        "gpu": "GPU 2",
+        "memoryMiB": 17256,
+        "cpu": "~244-264%",
+        "processState": "R<l",
+        "status": "running blind"
+      },
+      {
+        "seed": "02",
+        "arm": "active",
+        "pid": 123521,
+        "gpu": "GPU 3",
+        "memoryMiB": 17256,
+        "cpu": "~244-264%",
+        "processState": "R<l",
+        "status": "running blind"
+      },
+      {
+        "seed": "02",
+        "arm": "LR0",
+        "pid": 123530,
+        "gpu": "GPU 4",
+        "memoryMiB": 17256,
+        "cpu": "~244-264%",
+        "processState": "R<l",
+        "status": "running blind"
+      },
+      {
+        "seed": "03",
+        "arm": "active",
+        "pid": 123540,
+        "gpu": "GPU 5",
+        "memoryMiB": 17256,
+        "cpu": "~244-264%",
+        "processState": "R<l",
+        "status": "running blind"
+      },
+      {
+        "seed": "03",
+        "arm": "LR0",
+        "pid": 123551,
+        "gpu": "GPU 6",
+        "memoryMiB": 17256,
+        "cpu": "~244-264%",
+        "processState": "R<l",
+        "status": "running blind"
+      }
+    ],
+    "attemptArtifacts": {
+      "exit": 0,
+      "error": 0,
+      "fail": 0,
+      "replay": 0,
+      "eval": 0,
+      "decision": 0
+    }
+  },
+  "formalConfig": {
+    "task": "Cohort",
+    "decode": "question_only",
+    "prefixTokens": 512,
+    "environmentCandidates": 8,
+    "steps": 1,
+    "learningRate": "5e-4",
+    "mechanism": "frozen-tape reward-PG + environment BoN best/worst SFT prefix",
+    "comparison": "matched active vs LR0/reset"
+  },
+  "victoryContract": [
+    "3/3 fresh formal seeds have positive paired active-minus-LR0 deltas",
+    "Mean paired delta is at least +0.02",
+    "Clustered 95% confidence lower bound is greater than zero",
+    "No schema regression",
+    "Active beats LR0/reset and, only after the causal gate passes, reward-aware online ICL"
+  ],
+  "privateBoundary": {
+    "commit": "d9346b8",
+    "tests": "172 passed + 1 skipped",
+    "independentReview": "current exploitable P0=0 / P1=0",
+    "providerAvailable": false,
+    "state": "audited fail-closed scaffolding",
+    "todos": [
+      "Root capability broker",
+      "Persisted stage-plan / deployment / source join",
+      "C receipt v2 to Python / stage-plan v1 alignment",
+      "Real Linux UID/GID plus RW-to-RO end-to-end validation"
+    ]
+  },
+  "historicalAudit": {
+    "artifactSha256": "7b3163cb660e73c7c70f757565667fbdf830e7f34cd628549d2841fc443e1098",
+    "primarySweepFamilies": 1292,
+    "primarySweepMean": -0.0246708,
+    "primarySweepMedian": 0,
+    "qonlyFamilies": 670,
+    "qonlyWithin005": 407,
+    "qonlyExactZero": 249,
+    "cohortBonenvFullPairable": 32,
+    "cohortBonenvFullFamilies": 38,
+    "cohortBonenvFullMean": 0.0776291,
+    "cohortBonenvFullMedian": 0.0853732,
+    "cohortBonenvFullPositive": 30,
+    "cohortBonenvFullNegative": 2,
+    "currentPreregHistoricalHypothesis": 0.0609273
+  },
+  "sixTasks": [
+    {
+      "task": "BSM",
+      "snapshot": "single: 72/72 exact zero",
+      "conservativeStatus": "No historical advantage"
+    },
+    {
+      "task": "Code",
+      "snapshot": "qonly: 66/66 exact zero",
+      "conservativeStatus": "No historical advantage"
+    },
+    {
+      "task": "DB",
+      "snapshot": "qonly: 65/66 exact zero; 1 negative",
+      "conservativeStatus": "No historical advantage"
+    },
+    {
+      "task": "Poker",
+      "snapshot": "qonly: 60 negative / 10 positive; median -0.0708333",
+      "conservativeStatus": "Historical evidence is negative"
+    },
+    {
+      "task": "Sales",
+      "snapshot": "bonenv/qonly n=162: corrected mean -0.00071142; median +0.000025",
+      "conservativeStatus": "Corrected result is neutral; naive +0.0546159 was spurious"
+    },
+    {
+      "task": "Cohort",
+      "snapshot": "historical bonenv/full: 32/38 pairable, mean +0.0776291, median +0.0853732; current qonly formal is blind",
+      "conservativeStatus": "Only exploratory lead; no current causal proof"
+    }
+  ],
+  "resourceAsk": "Keep the current A100 40G job alive until attempt sealing; no additional GPU allocation and no broad sweep."
+}

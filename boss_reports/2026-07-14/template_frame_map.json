@@ -1,0 +1,122 @@
+{
+  "outputSlides": [
+    {
+      "outputSlide": 1,
+      "sourceSlide": 1,
+      "narrativeRole": "opening thesis",
+      "reuseMode": "duplicate-slide",
+      "editTargets": [
+        {"sourceElementId": "sh/kvqx0vqd", "action": "rewrite", "role": "title"},
+        {"sourceElementId": "sh/lwzy90ry", "action": "rewrite", "role": "subtitle"},
+        {"action": "add", "role": "required footer", "newPrimitiveAllowed": true, "zone": {"left": 32, "top": 505, "width": 896, "height": 22}, "reason": "User requires date, commit, attempt, evidence state, and page on every slide.", "mustNotOverlapInherited": true}
+      ]
+    },
+    {
+      "outputSlide": 2,
+      "sourceSlide": 13,
+      "narrativeRole": "executive summary and decision table",
+      "reuseMode": "duplicate-slide",
+      "editTargets": [
+        {"sourceElementId": "sh/by1onuds", "action": "rewrite", "role": "title"},
+        {"sourceElementId": "sh/ova5sfuh", "action": "rewrite", "role": "summary bullets"},
+        {"sourceElementId": "tb/0v6hor2l", "action": "rewrite", "role": "decision table"},
+        {"action": "add", "role": "required footer", "newPrimitiveAllowed": true, "zone": {"left": 32, "top": 505, "width": 896, "height": 22}, "reason": "User requires date, commit, attempt, evidence state, and page on every slide.", "mustNotOverlapInherited": true}
+      ]
+    },
+    {
+      "outputSlide": 3,
+      "sourceSlide": 10,
+      "narrativeRole": "causal win contract and gate table",
+      "reuseMode": "duplicate-slide",
+      "editTargets": [
+        {"sourceElementId": "sh/je9ovuh8", "action": "rewrite", "role": "title"},
+        {"sourceElementId": "sh/id0nmp03", "action": "rewrite", "role": "interpretation"},
+        {"sourceElementId": "tb/wbqtg7ih", "action": "rewrite", "role": "gate table"},
+        {"action": "add", "role": "comparator-gate clarification", "newPrimitiveAllowed": true, "zone": {"left": 32, "top": 336, "width": 896, "height": 58}, "reason": "Separate the gated online-ICL and N=8 rule from the inherited table without overlap.", "mustNotOverlapInherited": true},
+        {"action": "add", "role": "required footer", "newPrimitiveAllowed": true, "zone": {"left": 32, "top": 505, "width": 896, "height": 22}, "reason": "User requires date, commit, attempt, evidence state, and page on every slide.", "mustNotOverlapInherited": true}
+      ]
+    },
+    {
+      "outputSlide": 4,
+      "sourceSlide": 29,
+      "narrativeRole": "mechanism diagnosis and research arc",
+      "reuseMode": "duplicate-slide",
+      "editTargets": [
+        {"sourceElementId": "sh/i9cru1cb", "action": "rewrite", "role": "title"},
+        {"sourceElementId": "sh/jal8nmtg", "action": "rewrite", "role": "staged diagnosis"},
+        {"action": "add", "role": "required footer", "newPrimitiveAllowed": true, "zone": {"left": 32, "top": 505, "width": 896, "height": 22}, "reason": "User requires date, commit, attempt, evidence state, and page on every slide.", "mustNotOverlapInherited": true}
+      ]
+    },
+    {
+      "outputSlide": 5,
+      "sourceSlide": 27,
+      "narrativeRole": "matched experiment design and integrity table",
+      "reuseMode": "duplicate-slide",
+      "editTargets": [
+        {"sourceElementId": "sh/ozex436x", "action": "rewrite", "role": "title"},
+        {"sourceElementId": "sh/ny5gbyps", "action": "delete", "role": "empty inherited body placeholder"},
+        {"sourceElementId": "sh/xony1s7u", "action": "rewrite", "role": "design explanation"},
+        {"sourceElementId": "tb/1s3m18fm", "action": "rewrite-and-reposition", "role": "matched arm table"},
+        {"action": "add", "role": "required footer", "newPrimitiveAllowed": true, "zone": {"left": 32, "top": 505, "width": 896, "height": 22}, "reason": "User requires date, commit, attempt, evidence state, and page on every slide.", "mustNotOverlapInherited": true}
+      ]
+    },
+    {
+      "outputSlide": 6,
+      "sourceSlide": 39,
+      "narrativeRole": "formal run health table",
+      "reuseMode": "duplicate-slide",
+      "editTargets": [
+        {"sourceElementId": "sh/1o3yho36", "action": "rewrite", "role": "title"},
+        {"sourceElementId": "tb/9cjml8za", "action": "rewrite", "role": "metadata-only health table"},
+        {"action": "add", "role": "metadata-only liveness note", "newPrimitiveAllowed": true, "zone": {"left": 24, "top": 390, "width": 912, "height": 72}, "reason": "State blind liveness metadata and absent terminal artifacts outside the pairing table.", "mustNotOverlapInherited": true},
+        {"action": "add", "role": "required footer", "newPrimitiveAllowed": true, "zone": {"left": 32, "top": 505, "width": 896, "height": 22}, "reason": "User requires date, commit, attempt, evidence state, and page on every slide.", "mustNotOverlapInherited": true}
+      ]
+    },
+    {
+      "outputSlide": 7,
+      "sourceSlide": 39,
+      "narrativeRole": "historical evidence audit table",
+      "reuseMode": "duplicate-slide",
+      "editTargets": [
+        {"sourceElementId": "sh/1o3yho36", "action": "rewrite", "role": "title"},
+        {"sourceElementId": "tb/9cjml8za", "action": "rewrite", "role": "historical evidence table"},
+        {"action": "add", "role": "historical-audit footnote", "newPrimitiveAllowed": true, "zone": {"left": 24, "top": 392, "width": 912, "height": 78}, "reason": "Keep hypothesis-selection and results_probe exclusions outside the compact inherited table.", "mustNotOverlapInherited": true},
+        {"action": "add", "role": "required footer", "newPrimitiveAllowed": true, "zone": {"left": 32, "top": 505, "width": 896, "height": 22}, "reason": "User requires date, commit, attempt, evidence state, and page on every slide.", "mustNotOverlapInherited": true}
+      ]
+    },
+    {
+      "outputSlide": 8,
+      "sourceSlide": 27,
+      "narrativeRole": "boundary audit and causal readiness table",
+      "reuseMode": "duplicate-slide",
+      "editTargets": [
+        {"sourceElementId": "sh/ozex436x", "action": "rewrite", "role": "title"},
+        {"sourceElementId": "sh/ny5gbyps", "action": "delete", "role": "empty inherited body placeholder"},
+        {"sourceElementId": "sh/xony1s7u", "action": "rewrite", "role": "boundary and transfer explanation"},
+        {"sourceElementId": "tb/1s3m18fm", "action": "rewrite-and-reposition", "role": "readiness table"},
+        {"action": "add", "role": "required footer", "newPrimitiveAllowed": true, "zone": {"left": 32, "top": 505, "width": 896, "height": 22}, "reason": "User requires date, commit, attempt, evidence state, and page on every slide.", "mustNotOverlapInherited": true}
+      ]
+    },
+    {
+      "outputSlide": 9,
+      "sourceSlide": 28,
+      "narrativeRole": "next decision roadmap table",
+      "reuseMode": "duplicate-slide",
+      "editTargets": [
+        {"sourceElementId": "sh/5cv6twbq", "action": "rewrite", "role": "title"},
+        {"sourceElementId": "sh/u5knehc3", "action": "delete", "role": "empty inherited body placeholder"},
+        {"sourceElementId": "tb/2dcrihsn", "action": "rewrite", "role": "decision roadmap table"},
+        {"action": "add", "role": "exact resource ask", "newPrimitiveAllowed": true, "zone": {"left": 24, "top": 432, "width": 912, "height": 50}, "reason": "Present the boss-safe resource ask verbatim beneath the roadmap.", "mustNotOverlapInherited": true},
+        {"action": "add", "role": "required footer", "newPrimitiveAllowed": true, "zone": {"left": 32, "top": 505, "width": 896, "height": 22}, "reason": "User requires date, commit, attempt, evidence state, and page on every slide.", "mustNotOverlapInherited": true}
+      ]
+    }
+  ],
+  "omittedSourceSlides": [
+    {"sourceSlide": "2-9", "reason": "raw reading and infrastructure notes; no needed frame beyond selected slide 10"},
+    {"sourceSlide": "11-12", "reason": "model-specific appendix or dense explanatory layout"},
+    {"sourceSlide": "14-21", "reason": "antibody allocation content, overlapping composites, or appendix"},
+    {"sourceSlide": "23-26", "reason": "antibody repetition and aspect-ratio content"},
+    {"sourceSlide": "30-38", "reason": "external scientific figures, prediction notes, or appendix"},
+    {"sourceSlide": "40-57", "reason": "unrelated schedules, optimizer/data notes, operational appendix, or blank slide"}
+  ]
+}
