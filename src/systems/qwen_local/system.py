@@ -59,6 +59,15 @@ _GROUP_PG_CANDIDATE_PROPOSERS = {"policy_sample", "unit_interval_jitter"}
 _GROUP_PG_PROPOSAL_JITTER_SCALE = 0.35
 _GROUP_PG_LOGIT_CHUNK_TOKENS = 128
 _GROUP_PG_LOGIT_STRATEGY = "decoder_hidden_hook+chunked_target_ce"
+_FROZEN_TAPE_SCHEMA_VERSION = 1
+_FROZEN_TAPE_PROTOCOL = "cohort_qonly_frozen_tape_weight_update_ablation_v1"
+_FROZEN_TAPE_MECHANISM_LABEL = (
+    "frozen-tape weight-update ablation; not exact historical replication"
+)
+_FROZEN_TAPE_SAMPLING_RNG_BINDING = (
+    "ambient_runner_rng; grpo_run_seed registered but not locally forked"
+)
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 
 @register_system("qwen_local")
@@ -126,6 +135,7 @@ class QwenLocalSystem(ContinualLearningSystem):
         grpo_std_floor: float = 1e-4,
         grpo_run_seed: int = 0,
         grpo_adapter_init_seed: int | None = None,
+        adapter_init_seed: int | None = None,
         grpo_candidate_proposer: str | None = None,
         freeze_parameter_updates: bool = False,
         grpo_frozen_stream: bool = False,
@@ -217,13 +227,30 @@ class QwenLocalSystem(ContinualLearningSystem):
             raise ValueError("grpo_run_seed must be an integer")
         if grpo_run_seed < 0:
             raise ValueError("grpo_run_seed must be non-negative")
-        if grpo_adapter_init_seed is not None and (
-            isinstance(grpo_adapter_init_seed, bool)
-            or not isinstance(grpo_adapter_init_seed, int)
+        for seed_name, seed_value in (
+            ("grpo_adapter_init_seed", grpo_adapter_init_seed),
+            ("adapter_init_seed", adapter_init_seed),
         ):
-            raise ValueError("grpo_adapter_init_seed must be an integer or null")
-        if grpo_adapter_init_seed is not None and grpo_adapter_init_seed < 0:
-            raise ValueError("grpo_adapter_init_seed must be non-negative")
+            if seed_value is not None and (
+                isinstance(seed_value, bool) or not isinstance(seed_value, int)
+            ):
+                raise ValueError(f"{seed_name} must be an integer or null")
+            if seed_value is not None and seed_value < 0:
+                raise ValueError(f"{seed_name} must be non-negative")
+        if (
+            grpo_adapter_init_seed is not None
+            and adapter_init_seed is not None
+            and grpo_adapter_init_seed != adapter_init_seed
+        ):
+            raise ValueError(
+                "adapter_init_seed and legacy grpo_adapter_init_seed must match "
+                "when both are supplied"
+            )
+        adapter_init_seed = (
+            grpo_adapter_init_seed
+            if adapter_init_seed is None
+            else adapter_init_seed
+        )
         if grpo_candidate_proposer is None:
             grpo_candidate_proposer = "policy_sample"
         elif not isinstance(grpo_candidate_proposer, str):
@@ -346,7 +373,11 @@ class QwenLocalSystem(ContinualLearningSystem):
         self.grpo_adv_clip = grpo_adv_clip
         self.grpo_std_floor = grpo_std_floor
         self.grpo_run_seed = grpo_run_seed
-        self.grpo_adapter_init_seed = grpo_adapter_init_seed
+        # ``grpo_adapter_init_seed`` is retained as a config/provenance alias.
+        # Adapter initialization is useful outside group-PG too, most importantly
+        # for paired reward_pg/prefix frozen-tape ablations.
+        self.adapter_init_seed = adapter_init_seed
+        self.grpo_adapter_init_seed = adapter_init_seed
         self.grpo_candidate_proposer = grpo_candidate_proposer
         # ``grpo_frozen_stream`` is kept as a compatibility alias for the first
         # local D2 draft.  New configs should use the mechanism-neutral name.
@@ -400,9 +431,15 @@ class QwenLocalSystem(ContinualLearningSystem):
         self._reward_history: list[float] = []
         self._last_action_training_ids: list[int] | None = None
         self._last_action_prompt_tokens: int | None = None
+        self._last_response_integrity: dict[str, Any] | None = None
         self._tokenizer = None
         self._model = None
         self._lora_enabled = False
+        self._frozen_tape_initial_trainable_state: dict[str, Any] | None = None
+        self._frozen_tape_initial_hash: str | None = None
+        self._frozen_tape_last_digest: str | None = None
+        self._frozen_tape_replay_log: list[dict[str, Any]] = []
+        self._frozen_tape_heldout_eval = False
         # Make the explicit streaming control frozen even before run_task() calls
         # set_parameter_updates_enabled().  The runner may request updates for a
         # normal rollout later; set_parameter_updates_enabled keeps this hard gate.
@@ -437,7 +474,9 @@ class QwenLocalSystem(ContinualLearningSystem):
         ``freeze_parameter_updates`` so a normal continual rollout can retain its
         history while never updating.
         """
-        if self._uses_instance_group_pg():
+        if self._frozen_tape_heldout_eval:
+            enabled = False
+        elif self._uses_instance_group_pg():
             enabled = bool(enabled) and not self.freeze_parameter_updates
         else:
             # Preserve historical behavior of all old reward rules.
@@ -479,6 +518,7 @@ class QwenLocalSystem(ContinualLearningSystem):
         self._pending_env_bon = None
         self._last_action_training_ids = None
         self._last_action_prompt_tokens = None
+        self._last_response_integrity = None
 
     def respond(self, query: Query) -> Response:
         self.interaction_count += 1
@@ -570,6 +610,16 @@ class QwenLocalSystem(ContinualLearningSystem):
         self._remember_last_action_training_example(
             prompt_for_attempt, assistant_record
         )
+        self._last_response_integrity = {
+            "schema_valid": True,
+            "synthetic": False,
+            "timed_out": False,
+            "fallback": False,
+            "missing": False,
+            "hard_schema_failure": False,
+            "parse_retries": len(parse_errors),
+            "repairs": int(parse_repair_used),
+        }
         self.messages.append({"role": "assistant", "content": assistant_record})
 
         # Best-of-N + judge: sample N candidates for THIS query, score each with a
@@ -853,7 +903,1022 @@ class QwenLocalSystem(ContinualLearningSystem):
             artifacts["grpo_std_floor"] = self.grpo_std_floor
             artifacts["grpo_candidate_proposer"] = self.grpo_candidate_proposer
             artifacts["grpo_instance_log"] = list(self._grpo_instance_log)
+        if self._frozen_tape_last_digest is not None:
+            artifacts["frozen_tape_weight_update_ablation"] = {
+                "protocol": _FROZEN_TAPE_PROTOCOL,
+                "mechanism_label": _FROZEN_TAPE_MECHANISM_LABEL,
+                "tape_sha256": self._frozen_tape_last_digest,
+                "adapter_init_seed": self.adapter_init_seed,
+                "initial_trainable_param_sha256": self._frozen_tape_initial_hash,
+                "final_trainable_param_sha256": (
+                    self._frozen_tape_replay_log[-1]["trainable_param_sha256_final"]
+                    if self._frozen_tape_replay_log
+                    else None
+                ),
+                "heldout_updates_frozen": self._frozen_tape_heldout_eval,
+                "replays": list(self._frozen_tape_replay_log),
+            }
         return artifacts
+
+    # ------------------------------------------------------------------
+    # Cohort qonly frozen-tape weight-update ablation
+    # ------------------------------------------------------------------
+    # This API deliberately replays the *updates* produced by the historical
+    # reward_pg + env-BoN path against a shared immutable tape.  It is not an
+    # exact historical rollout replication: proposals during held-out evaluation
+    # are generated after replay, while the adaptation examples are frozen.
+
+    @staticmethod
+    def _frozen_tape_canonical_bytes(value: Any) -> bytes:
+        try:
+            return json.dumps(
+                value,
+                ensure_ascii=False,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Frozen update tape is not canonical-JSON encodable") from exc
+
+    @classmethod
+    def _frozen_tape_digest(cls, value: Any) -> str:
+        return hashlib.sha256(cls._frozen_tape_canonical_bytes(value)).hexdigest()
+
+    @staticmethod
+    def _frozen_tape_exact_keys(
+        value: Any, expected: set[str], *, where: str
+    ) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            raise ValueError(f"{where} must be an object")
+        actual = set(value)
+        if actual != expected:
+            raise ValueError(
+                f"{where} schema mismatch: missing={sorted(expected - actual)} "
+                f"extra={sorted(actual - expected)}"
+            )
+        return value
+
+    @staticmethod
+    def _frozen_tape_finite_number(value: Any, *, where: str) -> float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{where} must be a finite number")
+        result = float(value)
+        if not math.isfinite(result):
+            raise ValueError(f"{where} must be a finite number")
+        return result
+
+    @staticmethod
+    def _frozen_tape_parse_json(payload: bytes | str) -> Any:
+        if isinstance(payload, bytes):
+            try:
+                payload = payload.decode("utf-8", errors="strict")
+            except UnicodeDecodeError as exc:
+                raise ValueError("Frozen update tape must be strict UTF-8") from exc
+        if not isinstance(payload, str):
+            raise TypeError("Frozen update tape payload must be bytes, str, or dict")
+
+        def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError(f"Frozen update tape has duplicate key {key!r}")
+                result[key] = value
+            return result
+
+        try:
+            return json.loads(payload, object_pairs_hook=reject_duplicate_keys)
+        except (json.JSONDecodeError, UnicodeError) as exc:
+            raise ValueError("Frozen update tape is not valid strict JSON") from exc
+
+    def _frozen_tape_update_contract(self) -> dict[str, Any]:
+        return {
+            "adapter_init_seed": self.adapter_init_seed,
+            "adaptation_context_policy": self.adaptation_context_policy,
+            "best_of_n": self.best_of_n,
+            "bon_critic": self.bon_critic,
+            "bon_env_reward": self.bon_env_reward,
+            "context_policy": self.context_policy,
+            "distill_contrastive": self.distill_contrastive,
+            "history_ttt": self.history_ttt,
+            "method": self.method,
+            "model_path": self.model_path,
+            "num_virtual_tokens": self.num_virtual_tokens,
+            "peft_method": self.peft_method,
+            "reward_negative_weight": self.reward_negative_weight,
+            "reward_pg_steps": self.reward_pg_steps,
+            "reward_positive_weight": self.reward_positive_weight,
+            "reward_update_rule": self.reward_update_rule,
+            "ttt_max_tokens": self.ttt_max_tokens,
+            "ttt_steps": self.ttt_steps,
+        }
+
+    def _assert_frozen_tape_system_contract(self) -> None:
+        problems = []
+        if self.method != "ttt_rl":
+            problems.append("method must be 'ttt_rl'")
+        if self.reward_update_rule != "reward_pg":
+            problems.append("reward_update_rule must be 'reward_pg'")
+        if self.context_policy != "question_only":
+            problems.append("context_policy must be 'question_only'")
+        if self.bon_critic != "env" or self.best_of_n < 2:
+            problems.append("env BoN requires bon_critic='env' and best_of_n>=2")
+        if self.reward_pg_steps < 1:
+            problems.append("reward_pg_steps must be >=1")
+        if problems:
+            raise RuntimeError(
+                "Frozen-tape weight-update ablation contract violation: "
+                + "; ".join(problems)
+            )
+
+    def _normalize_frozen_tape_sampling_provenance(
+        self, provenance: Any
+    ) -> dict[str, Any]:
+        base_keys = {
+            "registered_run_seed",
+            "interaction_step",
+            "requested_best_of_n",
+            "initial_sample_attempts",
+            "generation_failures",
+            "parse_failures",
+            "duplicates",
+            "valid_unique",
+            "candidate_count",
+            "sampling_prompt_sha256",
+            "sampling_rng_binding",
+        }
+        if not isinstance(provenance, dict):
+            raise ValueError("Frozen tape sampling provenance must be an object")
+        has_digest = "provenance_sha256" in provenance
+        expected_keys = base_keys | ({"provenance_sha256"} if has_digest else set())
+        provenance = self._frozen_tape_exact_keys(
+            provenance, expected_keys, where="frozen tape sampling provenance"
+        )
+        for key in (
+            "registered_run_seed",
+            "interaction_step",
+            "requested_best_of_n",
+            "initial_sample_attempts",
+            "generation_failures",
+            "parse_failures",
+            "duplicates",
+            "valid_unique",
+            "candidate_count",
+        ):
+            if (
+                isinstance(provenance[key], bool)
+                or not isinstance(provenance[key], int)
+                or provenance[key] < 0
+            ):
+                raise ValueError(f"Frozen tape sampling {key} must be non-negative int")
+        if provenance["interaction_step"] < 1:
+            raise ValueError("Frozen tape sampling interaction_step must be positive")
+        if provenance["requested_best_of_n"] < 2:
+            raise ValueError("Frozen tape sampling requested_best_of_n must be >=2")
+        prompt_hash = provenance["sampling_prompt_sha256"]
+        if not isinstance(prompt_hash, str) or _SHA256_RE.fullmatch(prompt_hash) is None:
+            raise ValueError("Frozen tape sampling prompt hash is malformed")
+        if provenance["sampling_rng_binding"] != _FROZEN_TAPE_SAMPLING_RNG_BINDING:
+            raise ValueError("Frozen tape sampling RNG binding mismatch")
+        if provenance["candidate_count"] < 2:
+            raise ValueError("Frozen tape sampling candidate_count must be >=2")
+        if provenance["valid_unique"] > provenance["candidate_count"]:
+            raise ValueError("Frozen tape sampling valid_unique exceeds candidate_count")
+        normalized = {key: provenance[key] for key in base_keys}
+        digest = self._frozen_tape_digest(normalized)
+        if has_digest and provenance["provenance_sha256"] != digest:
+            raise ValueError("Frozen tape sampling provenance digest mismatch")
+        normalized["provenance_sha256"] = digest
+        return normalized
+
+    def record_frozen_tape_item(
+        self,
+        *,
+        sequence_index: int,
+        instance_id: str,
+        instance_index: int,
+        committed_training_ids: list[int],
+        committed_prompt_tokens: int,
+        committed_reward: float,
+        env_bon_prompt: str,
+        env_bon_candidates: list[str],
+        env_bon_rewards: list[float],
+        integrity: dict[str, Any],
+        sampling_provenance: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build one immutable adaptation item with content-level hashes.
+
+        Callers may use :meth:`capture_frozen_tape_item` for the normal runner
+        path.  This lower-level constructor exists for offline collectors that
+        already persisted the exact committed token IDs and env-scored group.
+        """
+        self._assert_frozen_tape_system_contract()
+        if isinstance(sequence_index, bool) or not isinstance(sequence_index, int):
+            raise ValueError("sequence_index must be an integer")
+        if sequence_index < 0:
+            raise ValueError("sequence_index must be non-negative")
+        if not isinstance(instance_id, str) or not instance_id:
+            raise ValueError("instance_id must be a non-empty string")
+        if isinstance(instance_index, bool) or not isinstance(instance_index, int):
+            raise ValueError("instance_index must be an integer")
+        if instance_index < 0:
+            raise ValueError("instance_index must be non-negative")
+        if not isinstance(committed_training_ids, list) or not committed_training_ids:
+            raise ValueError("committed_training_ids must be a non-empty list")
+        if any(
+            isinstance(token, bool) or not isinstance(token, int) or token < 0
+            for token in committed_training_ids
+        ):
+            raise ValueError("committed_training_ids must contain non-negative ints")
+        if (
+            isinstance(committed_prompt_tokens, bool)
+            or not isinstance(committed_prompt_tokens, int)
+            or not 0 <= committed_prompt_tokens < len(committed_training_ids)
+        ):
+            raise ValueError(
+                "committed_prompt_tokens must retain at least one target token"
+            )
+        committed_reward = self._frozen_tape_finite_number(
+            committed_reward, where="committed_reward"
+        )
+        # The formal contract intentionally has exactly two optimizer calls per
+        # item. A zero reward would make the historical reward-PG call a no-op and
+        # therefore belongs in a different preregistered protocol.
+        if committed_reward == 0.0:
+            raise ValueError("committed_reward must be non-zero for two-call replay")
+        if not isinstance(env_bon_prompt, str) or not env_bon_prompt:
+            raise ValueError("env_bon_prompt must be a non-empty string")
+        if not isinstance(env_bon_candidates, list) or len(env_bon_candidates) < 2:
+            raise ValueError("env_bon_candidates must contain at least two candidates")
+        if any(not isinstance(candidate, str) or not candidate for candidate in env_bon_candidates):
+            raise ValueError("env_bon_candidates must contain non-empty strings")
+        if not isinstance(env_bon_rewards, list) or len(env_bon_rewards) != len(
+            env_bon_candidates
+        ):
+            raise ValueError("env_bon_rewards must align one-to-one with candidates")
+        rewards = [
+            self._frozen_tape_finite_number(value, where="env_bon_reward")
+            for value in env_bon_rewards
+        ]
+        integrity = self._validate_frozen_tape_integrity(integrity)
+        sampling_provenance = self._normalize_frozen_tape_sampling_provenance(
+            sampling_provenance
+        )
+        if sampling_provenance["requested_best_of_n"] != self.best_of_n:
+            raise ValueError("Frozen tape requested best_of_n differs from system")
+        if sampling_provenance["valid_unique"] != len(set(env_bon_candidates)):
+            raise ValueError("Frozen tape sampling valid_unique mismatch")
+
+        prompt_ids = committed_training_ids[:committed_prompt_tokens]
+        target_ids = committed_training_ids[committed_prompt_tokens:]
+        training_payload = {
+            "ids": list(committed_training_ids),
+            "prompt_tokens": committed_prompt_tokens,
+        }
+        candidate_records = [
+            {
+                "candidate": candidate,
+                "candidate_sha256": hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
+                "reward": reward,
+                "reward_sha256": self._frozen_tape_digest(reward),
+            }
+            for candidate, reward in zip(env_bon_candidates, rewards, strict=True)
+        ]
+        if sampling_provenance["candidate_count"] != len(candidate_records):
+            raise ValueError("Frozen tape sampling candidate_count mismatch")
+        ranked = sorted(
+            (
+                (record["reward"], record["candidate"], candidate_index)
+                for candidate_index, record in enumerate(candidate_records)
+            ),
+            key=lambda row: row[0],
+            reverse=True,
+        )
+        _best_reward, best_candidate, best_index = ranked[0]
+        _worst_reward, worst_candidate, worst_index = ranked[-1]
+        batch_specs = [
+            ("positive", best_index, best_candidate, self.reward_positive_weight)
+        ]
+        if (
+            self.distill_contrastive
+            and self.reward_negative_weight > 0
+            and worst_candidate != best_candidate
+        ):
+            batch_specs.append(
+                ("negative", worst_index, worst_candidate, -self.reward_negative_weight)
+            )
+        selected_batches: list[dict[str, Any]] = []
+        for role, candidate_index, candidate, signed_weight in batch_specs:
+            batch = self._build_distill_batch(
+                env_bon_prompt, candidate, signed_weight
+            )
+            if batch is None:
+                raise ValueError(f"env-BoN {role} selected batch is empty")
+            batch_payload = {
+                "role": role,
+                "candidate_index": candidate_index,
+                "ids": list(batch["ids"]),
+                "prompt_tokens": int(batch["prompt_tokens"]),
+                "signed_weight": float(batch["signed_weight"]),
+            }
+            batch_payload["batch_sha256"] = self._frozen_tape_digest(batch_payload)
+            selected_batches.append(batch_payload)
+        item: dict[str, Any] = {
+            "schema_version": _FROZEN_TAPE_SCHEMA_VERSION,
+            "sequence_index": sequence_index,
+            "instance_id": instance_id,
+            "instance_index": instance_index,
+            "integrity": dict(integrity),
+            "sampling_provenance": sampling_provenance,
+            "committed_reward_pg": {
+                **training_payload,
+                "prompt_token_ids_sha256": self._frozen_tape_digest(prompt_ids),
+                "target_token_ids_sha256": self._frozen_tape_digest(target_ids),
+                "training_example_sha256": self._frozen_tape_digest(training_payload),
+                "reward": committed_reward,
+                "reward_sha256": self._frozen_tape_digest(committed_reward),
+            },
+            "env_bon": {
+                "prompt": env_bon_prompt,
+                "prompt_sha256": hashlib.sha256(
+                    env_bon_prompt.encode("utf-8")
+                ).hexdigest(),
+                "candidates": candidate_records,
+                "candidate_order_sha256": self._frozen_tape_digest(candidate_records),
+                "selected_batches": selected_batches,
+            },
+        }
+        item["item_sha256"] = self._frozen_tape_digest(item)
+        self._validate_frozen_tape_item(item, expected_sequence_index=sequence_index)
+        return item
+
+    def capture_frozen_tape_item(
+        self,
+        observation: Observation,
+        *,
+        sequence_index: int,
+        instance_id: str | None = None,
+        instance_index: int | None = None,
+        integrity: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Capture the exact terminal update inputs before ``observe()`` consumes them."""
+        self._assert_frozen_tape_system_contract()
+        pending = self._pending_env_bon
+        if not isinstance(pending, dict):
+            raise RuntimeError("No pending env-BoN group to capture")
+        if pending.get("lazy_generation") is not None:
+            raise RuntimeError("Frozen-tape collector requires eager historical env-BoN")
+        if self._last_action_training_ids is None or self._last_action_prompt_tokens is None:
+            raise RuntimeError("No committed reward-PG training example to capture")
+        candidates = pending.get("candidates")
+        if not isinstance(candidates, list):
+            raise RuntimeError("Pending env-BoN candidates are malformed")
+        scored: list[float] = []
+        metadata = observation.metadata or {}
+        for candidate in candidates:
+            reward = self._score_env_candidate(candidate, pending.get("schema"), metadata)
+            if reward is None:
+                raise RuntimeError("Every frozen-tape env-BoN candidate must score")
+            scored.append(float(reward))
+        resolved_instance_id = (
+            pending.get("instance_id") if instance_id is None else instance_id
+        )
+        resolved_instance_index = (
+            pending.get("instance_index") if instance_index is None else instance_index
+        )
+        if resolved_instance_id is None:
+            resolved_instance_id = f"instance-{resolved_instance_index}"
+        prompt = self._render_generation_prompt(
+            [{"role": "user", "content": str(pending["query_text"])}]
+        )
+        resolved_integrity = (
+            dict(self._last_response_integrity)
+            if integrity is None and self._last_response_integrity is not None
+            else integrity
+        )
+        if resolved_integrity is None:
+            raise RuntimeError("No response integrity evidence to capture")
+        candidate_sampling = pending.get("candidate_sampling")
+        if not isinstance(candidate_sampling, dict):
+            raise RuntimeError("No eager env-BoN sampling provenance to capture")
+        sampling_provenance = {
+            "registered_run_seed": pending.get("registered_run_seed"),
+            "interaction_step": pending.get("interaction_step"),
+            "requested_best_of_n": candidate_sampling.get("requested_group_size"),
+            "initial_sample_attempts": candidate_sampling.get(
+                "initial_sample_attempts"
+            ),
+            "generation_failures": candidate_sampling.get("generation_failures"),
+            "parse_failures": candidate_sampling.get("parse_failures"),
+            "duplicates": candidate_sampling.get("duplicates"),
+            "valid_unique": candidate_sampling.get("valid_unique"),
+            "candidate_count": candidate_sampling.get("candidate_count"),
+            "sampling_prompt_sha256": pending.get("sampling_prompt_sha256"),
+            "sampling_rng_binding": _FROZEN_TAPE_SAMPLING_RNG_BINDING,
+        }
+        return self.record_frozen_tape_item(
+            sequence_index=sequence_index,
+            instance_id=resolved_instance_id,
+            instance_index=resolved_instance_index,
+            committed_training_ids=list(self._last_action_training_ids),
+            committed_prompt_tokens=int(self._last_action_prompt_tokens),
+            committed_reward=self._infer_feedback_reward(observation),
+            env_bon_prompt=prompt,
+            env_bon_candidates=list(candidates),
+            env_bon_rewards=scored,
+            integrity=resolved_integrity,
+            sampling_provenance=sampling_provenance,
+        )
+
+    def _validate_frozen_tape_integrity(self, integrity: Any) -> dict[str, Any]:
+        integrity = self._frozen_tape_exact_keys(
+            integrity,
+            {
+                "schema_valid",
+                "synthetic",
+                "timed_out",
+                "fallback",
+                "missing",
+                "hard_schema_failure",
+                "parse_retries",
+                "repairs",
+            },
+            where="frozen tape item integrity",
+        )
+        for key in (
+            "schema_valid",
+            "synthetic",
+            "timed_out",
+            "fallback",
+            "missing",
+            "hard_schema_failure",
+        ):
+            if not isinstance(integrity[key], bool):
+                raise ValueError(f"Frozen tape integrity {key} must be boolean")
+        for key in ("parse_retries", "repairs"):
+            if (
+                isinstance(integrity[key], bool)
+                or not isinstance(integrity[key], int)
+                or integrity[key] < 0
+            ):
+                raise ValueError(f"Frozen tape integrity {key} must be non-negative int")
+        if (
+            not integrity["schema_valid"]
+            or integrity["synthetic"]
+            or integrity["timed_out"]
+            or integrity["fallback"]
+            or integrity["missing"]
+            or integrity["hard_schema_failure"]
+        ):
+            raise ValueError("Frozen tape item failed the no-fallback/schema gate")
+        return integrity
+
+    def _validate_frozen_tape_item(
+        self, item: Any, *, expected_sequence_index: int
+    ) -> dict[str, Any]:
+        item = self._frozen_tape_exact_keys(
+            item,
+            {
+                "schema_version",
+                "sequence_index",
+                "instance_id",
+                "instance_index",
+                "integrity",
+                "sampling_provenance",
+                "committed_reward_pg",
+                "env_bon",
+                "item_sha256",
+            },
+            where=f"items[{expected_sequence_index}]",
+        )
+        if item["schema_version"] != _FROZEN_TAPE_SCHEMA_VERSION:
+            raise ValueError("Frozen tape item schema_version mismatch")
+        if item["sequence_index"] != expected_sequence_index:
+            raise ValueError("Frozen tape item order/sequence_index mismatch")
+        if not isinstance(item["instance_id"], str) or not item["instance_id"]:
+            raise ValueError("Frozen tape instance_id must be non-empty")
+        if (
+            isinstance(item["instance_index"], bool)
+            or not isinstance(item["instance_index"], int)
+            or item["instance_index"] < 0
+        ):
+            raise ValueError("Frozen tape instance_index must be non-negative int")
+        self._validate_frozen_tape_integrity(item["integrity"])
+        sampling_provenance = self._normalize_frozen_tape_sampling_provenance(
+            item["sampling_provenance"]
+        )
+        committed = self._frozen_tape_exact_keys(
+            item["committed_reward_pg"],
+            {
+                "ids",
+                "prompt_tokens",
+                "prompt_token_ids_sha256",
+                "target_token_ids_sha256",
+                "training_example_sha256",
+                "reward",
+                "reward_sha256",
+            },
+            where=f"items[{expected_sequence_index}].committed_reward_pg",
+        )
+        ids = committed["ids"]
+        prompt_tokens = committed["prompt_tokens"]
+        if not isinstance(ids, list) or not ids or any(
+            isinstance(token, bool) or not isinstance(token, int) or token < 0
+            for token in ids
+        ):
+            raise ValueError("Frozen tape committed ids are malformed")
+        if (
+            isinstance(prompt_tokens, bool)
+            or not isinstance(prompt_tokens, int)
+            or not 0 <= prompt_tokens < len(ids)
+        ):
+            raise ValueError("Frozen tape committed prompt_tokens are malformed")
+        reward = self._frozen_tape_finite_number(
+            committed["reward"], where="committed reward"
+        )
+        if reward == 0.0:
+            raise ValueError("Frozen tape committed reward must be non-zero")
+        expected_hashes = {
+            "prompt_token_ids_sha256": self._frozen_tape_digest(ids[:prompt_tokens]),
+            "target_token_ids_sha256": self._frozen_tape_digest(ids[prompt_tokens:]),
+            "training_example_sha256": self._frozen_tape_digest(
+                {"ids": ids, "prompt_tokens": prompt_tokens}
+            ),
+            "reward_sha256": self._frozen_tape_digest(reward),
+        }
+        for key, expected in expected_hashes.items():
+            if committed[key] != expected:
+                raise ValueError(f"Frozen tape committed {key} mismatch")
+
+        env_bon = self._frozen_tape_exact_keys(
+            item["env_bon"],
+            {
+                "prompt",
+                "prompt_sha256",
+                "candidates",
+                "candidate_order_sha256",
+                "selected_batches",
+            },
+            where=f"items[{expected_sequence_index}].env_bon",
+        )
+        prompt = env_bon["prompt"]
+        if not isinstance(prompt, str) or not prompt:
+            raise ValueError("Frozen tape env-BoN prompt must be non-empty")
+        if env_bon["prompt_sha256"] != hashlib.sha256(prompt.encode("utf-8")).hexdigest():
+            raise ValueError("Frozen tape env-BoN prompt hash mismatch")
+        candidate_records = env_bon["candidates"]
+        if not isinstance(candidate_records, list) or len(candidate_records) < 2:
+            raise ValueError("Frozen tape env-BoN group must have at least two candidates")
+        if sampling_provenance["requested_best_of_n"] != self.best_of_n:
+            raise ValueError("Frozen tape requested best_of_n differs from system")
+        if sampling_provenance["candidate_count"] != len(candidate_records):
+            raise ValueError("Frozen tape sampling candidate_count mismatch")
+        for candidate_index, record in enumerate(candidate_records):
+            record = self._frozen_tape_exact_keys(
+                record,
+                {"candidate", "candidate_sha256", "reward", "reward_sha256"},
+                where=(
+                    f"items[{expected_sequence_index}].env_bon.candidates"
+                    f"[{candidate_index}]"
+                ),
+            )
+            candidate = record["candidate"]
+            if not isinstance(candidate, str) or not candidate:
+                raise ValueError("Frozen tape candidates must be non-empty strings")
+            if record["candidate_sha256"] != hashlib.sha256(
+                candidate.encode("utf-8")
+            ).hexdigest():
+                raise ValueError("Frozen tape candidate hash mismatch")
+            candidate_reward = self._frozen_tape_finite_number(
+                record["reward"], where="candidate reward"
+            )
+            if record["reward_sha256"] != self._frozen_tape_digest(candidate_reward):
+                raise ValueError("Frozen tape candidate reward hash mismatch")
+        if sampling_provenance["valid_unique"] != len(
+            {record["candidate"] for record in candidate_records}
+        ):
+            raise ValueError("Frozen tape sampling valid_unique mismatch")
+        if env_bon["candidate_order_sha256"] != self._frozen_tape_digest(
+            candidate_records
+        ):
+            raise ValueError("Frozen tape candidate order hash mismatch")
+        ranked = sorted(
+            (
+                (float(record["reward"]), record["candidate"], candidate_index)
+                for candidate_index, record in enumerate(candidate_records)
+            ),
+            key=lambda row: row[0],
+            reverse=True,
+        )
+        _best_reward, best_candidate, best_index = ranked[0]
+        _worst_reward, worst_candidate, worst_index = ranked[-1]
+        expected_specs = [
+            ("positive", best_index, float(self.reward_positive_weight))
+        ]
+        if (
+            self.distill_contrastive
+            and self.reward_negative_weight > 0
+            and worst_candidate != best_candidate
+        ):
+            expected_specs.append(
+                ("negative", worst_index, -float(self.reward_negative_weight))
+            )
+        selected_batches = env_bon["selected_batches"]
+        if not isinstance(selected_batches, list) or len(selected_batches) != len(
+            expected_specs
+        ):
+            raise ValueError("Frozen tape selected env-BoN batch count mismatch")
+        for batch_index, (batch, expected_spec) in enumerate(
+            zip(selected_batches, expected_specs, strict=True)
+        ):
+            batch = self._frozen_tape_exact_keys(
+                batch,
+                {
+                    "role",
+                    "candidate_index",
+                    "ids",
+                    "prompt_tokens",
+                    "signed_weight",
+                    "batch_sha256",
+                },
+                where=(
+                    f"items[{expected_sequence_index}].env_bon.selected_batches"
+                    f"[{batch_index}]"
+                ),
+            )
+            expected_role, expected_candidate_index, expected_weight = expected_spec
+            if batch["role"] != expected_role:
+                raise ValueError("Frozen tape selected batch role/order mismatch")
+            if batch["candidate_index"] != expected_candidate_index:
+                raise ValueError("Frozen tape selected batch candidate index mismatch")
+            ids = batch["ids"]
+            prompt_tokens = batch["prompt_tokens"]
+            if not isinstance(ids, list) or not ids or any(
+                isinstance(token, bool) or not isinstance(token, int) or token < 0
+                for token in ids
+            ):
+                raise ValueError("Frozen tape selected batch ids are malformed")
+            if (
+                isinstance(prompt_tokens, bool)
+                or not isinstance(prompt_tokens, int)
+                or not 0 <= prompt_tokens < len(ids)
+            ):
+                raise ValueError("Frozen tape selected batch prompt_tokens are malformed")
+            signed_weight = self._frozen_tape_finite_number(
+                batch["signed_weight"], where="selected batch signed_weight"
+            )
+            if signed_weight != expected_weight:
+                raise ValueError("Frozen tape selected batch signed weight mismatch")
+            batch_without_digest = {
+                key: value for key, value in batch.items() if key != "batch_sha256"
+            }
+            if (
+                not isinstance(batch["batch_sha256"], str)
+                or _SHA256_RE.fullmatch(batch["batch_sha256"]) is None
+                or batch["batch_sha256"]
+                != self._frozen_tape_digest(batch_without_digest)
+            ):
+                raise ValueError("Frozen tape selected batch digest mismatch")
+        item_without_digest = {key: value for key, value in item.items() if key != "item_sha256"}
+        if (
+            not isinstance(item["item_sha256"], str)
+            or _SHA256_RE.fullmatch(item["item_sha256"]) is None
+            or item["item_sha256"] != self._frozen_tape_digest(item_without_digest)
+        ):
+            raise ValueError("Frozen tape item digest mismatch")
+        return item
+
+    def assemble_frozen_update_tape(
+        self, items: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Assemble ordered items and bind every update-relevant config except LR."""
+        self._assert_frozen_tape_system_contract()
+        if float(self.ttt_lr) != 0.0 or float(self.reward_pg_lr) != 0.0:
+            raise RuntimeError("Frozen update tape must be assembled by an LR0 collector")
+        if (
+            self._frozen_tape_initial_trainable_state is None
+            or self._frozen_tape_initial_hash is None
+        ):
+            raise RuntimeError(
+                "Call initialize_and_snapshot_adapter_state() before collection"
+            )
+        collector_final_hash = self._trainable_param_sha256()
+        if collector_final_hash != self._frozen_tape_initial_hash:
+            raise RuntimeError("LR0 collector changed trainable parameters")
+        if not isinstance(items, list) or not items:
+            raise ValueError("Frozen update tape requires at least one item")
+        validated = [
+            self._validate_frozen_tape_item(item, expected_sequence_index=index)
+            for index, item in enumerate(items)
+        ]
+        instance_ids = [item["instance_id"] for item in validated]
+        instance_indices = [item["instance_index"] for item in validated]
+        if len(set(instance_ids)) != len(instance_ids):
+            raise ValueError("Frozen update tape instance_id values must be unique")
+        if len(set(instance_indices)) != len(instance_indices):
+            raise ValueError("Frozen update tape instance_index values must be unique")
+        tape: dict[str, Any] = {
+            "schema_version": _FROZEN_TAPE_SCHEMA_VERSION,
+            "protocol": _FROZEN_TAPE_PROTOCOL,
+            "mechanism_label": _FROZEN_TAPE_MECHANISM_LABEL,
+            "learning_rate_ablation_fields": ["ttt_lr", "reward_pg_lr"],
+            "collector_trainable_param_sha256_initial": self._frozen_tape_initial_hash,
+            "collector_trainable_param_sha256_final": collector_final_hash,
+            "collector_lr0_verified": True,
+            "update_contract": self._frozen_tape_update_contract(),
+            # Canonical round-trip prevents the caller mutating nested input lists
+            # after the digest is computed.
+            "items": json.loads(self._frozen_tape_canonical_bytes(validated)),
+        }
+        tape["tape_sha256"] = self._frozen_tape_digest(tape)
+        return tape
+
+    def validate_frozen_update_tape(
+        self,
+        tape: dict[str, Any] | bytes | str,
+        *,
+        expected_tape_sha256: str | None = None,
+    ) -> dict[str, Any]:
+        """Strictly validate schema, every nested hash, order, and root digest."""
+        self._assert_frozen_tape_system_contract()
+        if isinstance(tape, (bytes, str)):
+            tape = self._frozen_tape_parse_json(tape)
+        tape = self._frozen_tape_exact_keys(
+            tape,
+            {
+                "schema_version",
+                "protocol",
+                "mechanism_label",
+                "learning_rate_ablation_fields",
+                "collector_trainable_param_sha256_initial",
+                "collector_trainable_param_sha256_final",
+                "collector_lr0_verified",
+                "update_contract",
+                "items",
+                "tape_sha256",
+            },
+            where="frozen_update_tape",
+        )
+        if tape["schema_version"] != _FROZEN_TAPE_SCHEMA_VERSION:
+            raise ValueError("Frozen update tape schema_version mismatch")
+        if tape["protocol"] != _FROZEN_TAPE_PROTOCOL:
+            raise ValueError("Frozen update tape protocol mismatch")
+        if tape["mechanism_label"] != _FROZEN_TAPE_MECHANISM_LABEL:
+            raise ValueError("Frozen update tape mechanism label mismatch")
+        if tape["learning_rate_ablation_fields"] != ["ttt_lr", "reward_pg_lr"]:
+            raise ValueError("Frozen update tape LR-ablation fields mismatch")
+        collector_initial = tape["collector_trainable_param_sha256_initial"]
+        collector_final = tape["collector_trainable_param_sha256_final"]
+        if (
+            not isinstance(collector_initial, str)
+            or _SHA256_RE.fullmatch(collector_initial) is None
+            or not isinstance(collector_final, str)
+            or _SHA256_RE.fullmatch(collector_final) is None
+            or collector_initial != collector_final
+            or tape["collector_lr0_verified"] is not True
+        ):
+            raise ValueError("Frozen update tape LR0 collector hash gate failed")
+        if tape["update_contract"] != self._frozen_tape_update_contract():
+            raise ValueError("Frozen update tape updater config differs from this arm")
+        items = tape["items"]
+        if not isinstance(items, list) or not items:
+            raise ValueError("Frozen update tape items must be a non-empty list")
+        validated = [
+            self._validate_frozen_tape_item(item, expected_sequence_index=index)
+            for index, item in enumerate(items)
+        ]
+        if len({item["instance_id"] for item in validated}) != len(validated):
+            raise ValueError("Frozen update tape instance_id values must be unique")
+        if len({item["instance_index"] for item in validated}) != len(validated):
+            raise ValueError("Frozen update tape instance_index values must be unique")
+        embedded = tape["tape_sha256"]
+        if not isinstance(embedded, str) or _SHA256_RE.fullmatch(embedded) is None:
+            raise ValueError("Frozen update tape root digest is malformed")
+        without_digest = {key: value for key, value in tape.items() if key != "tape_sha256"}
+        if embedded != self._frozen_tape_digest(without_digest):
+            raise ValueError("Frozen update tape root digest mismatch")
+        if expected_tape_sha256 is not None:
+            if (
+                not isinstance(expected_tape_sha256, str)
+                or _SHA256_RE.fullmatch(expected_tape_sha256) is None
+            ):
+                raise ValueError("Expected frozen update tape digest is malformed")
+            if embedded != expected_tape_sha256:
+                raise ValueError("Frozen update tape differs from preregistered digest")
+        return json.loads(self._frozen_tape_canonical_bytes(tape))
+
+    def serialize_frozen_update_tape(self, tape: dict[str, Any]) -> bytes:
+        validated = self.validate_frozen_update_tape(tape)
+        return self._frozen_tape_canonical_bytes(validated)
+
+    def capture_initial_adapter_state(self) -> str:
+        """Snapshot the exact initial trainable adapter for later restoration."""
+        self._ensure_lora_model()
+        import torch
+
+        assert self._model is not None
+        if self._frozen_tape_initial_trainable_state is not None:
+            current_hash = self._trainable_param_sha256()
+            if current_hash != self._frozen_tape_initial_hash:
+                raise RuntimeError(
+                    "Initial adapter state was already captured and weights changed"
+                )
+            return current_hash
+        state = {
+            name: parameter.detach().cpu().clone()
+            for name, parameter in self._model.named_parameters()
+            if parameter.requires_grad
+        }
+        if not state:
+            raise RuntimeError("Frozen-tape ablation found no trainable adapter parameters")
+        current_hash = self._trainable_param_sha256()
+        self._frozen_tape_initial_trainable_state = state
+        self._frozen_tape_initial_hash = current_hash
+        return current_hash
+
+    def initialize_and_snapshot_adapter_state(self) -> str:
+        """Install the adapter before collection and snapshot its frozen policy."""
+        return self.capture_initial_adapter_state()
+
+    def current_trainable_param_sha256(self) -> str:
+        """Return an audit hash after ensuring the configured adapter is installed."""
+        self._ensure_lora_model()
+        return self._trainable_param_sha256()
+
+    def restore_initial_adapter_state(self) -> str:
+        """Restore the captured pre-replay adapter and verify its exact hash."""
+        if self._frozen_tape_initial_trainable_state is None:
+            raise RuntimeError("No frozen-tape initial adapter state has been captured")
+        self._ensure_lora_model()
+        import torch
+
+        assert self._model is not None
+        trainable = {
+            name: parameter
+            for name, parameter in self._model.named_parameters()
+            if parameter.requires_grad
+        }
+        expected_names = set(self._frozen_tape_initial_trainable_state)
+        if set(trainable) != expected_names:
+            raise RuntimeError("Trainable adapter parameter set changed before restore")
+        with torch.no_grad():
+            for name, saved in self._frozen_tape_initial_trainable_state.items():
+                parameter = trainable[name]
+                if tuple(parameter.shape) != tuple(saved.shape):
+                    raise RuntimeError(f"Trainable adapter shape changed for {name}")
+                parameter.copy_(saved.to(device=parameter.device, dtype=parameter.dtype))
+        restored_hash = self._trainable_param_sha256()
+        if restored_hash != self._frozen_tape_initial_hash:
+            raise RuntimeError("Initial adapter restore hash mismatch")
+        return restored_hash
+
+    def replay_frozen_update_tape(
+        self,
+        tape: dict[str, Any] | bytes | str,
+        *,
+        expected_tape_sha256: str,
+    ) -> dict[str, Any]:
+        """Replay identical update calls; only configured learning rates may differ."""
+        if self._frozen_tape_heldout_eval:
+            raise RuntimeError("Cannot replay after held-out evaluation updates are frozen")
+        validated = self.validate_frozen_update_tape(
+            tape, expected_tape_sha256=expected_tape_sha256
+        )
+        self.set_parameter_updates_enabled(True)
+        self._ensure_lora_model()
+        if self._frozen_tape_initial_trainable_state is None:
+            initial_hash = self.capture_initial_adapter_state()
+        else:
+            initial_hash = self._trainable_param_sha256()
+            if initial_hash != self._frozen_tape_initial_hash:
+                raise RuntimeError(
+                    "Adapter is not at captured initial state; call "
+                    "restore_initial_adapter_state() before replay"
+                )
+        replay_items: list[dict[str, Any]] = []
+        for item in validated["items"]:
+            item_before = self._trainable_param_sha256()
+            operations: list[dict[str, Any]] = []
+
+            committed = item["committed_reward_pg"]
+            reward = float(committed["reward"])
+            signed_weight = self._signed_weight_from_reward(reward)
+            if signed_weight == 0.0:
+                raise RuntimeError("Frozen-tape reward-PG signed weight unexpectedly zero")
+            reward_before = self._trainable_param_sha256()
+            previous_steps = self.ttt_steps
+            try:
+                self.ttt_steps = self.reward_pg_steps
+                self.last_reward_pg_loss = self._train_lora_token_batches(
+                    [
+                        {
+                            "ids": list(committed["ids"]),
+                            "prompt_tokens": int(committed["prompt_tokens"]),
+                            "signed_weight": signed_weight,
+                        }
+                    ],
+                    lr=self.reward_pg_lr,
+                )
+            finally:
+                self.ttt_steps = previous_steps
+            reward_after = self._trainable_param_sha256()
+            self.reward_pg_updates += 1
+            if signed_weight > 0:
+                self.reward_pg_positive_updates += 1
+            else:
+                self.reward_pg_negative_updates += 1
+            operations.append(
+                {
+                    "operation": "reward_pg_terminal",
+                    "batch_count": 1,
+                    "input_sha256": [
+                        committed["training_example_sha256"],
+                        committed["reward_sha256"],
+                    ],
+                    "trainable_param_sha256_before": reward_before,
+                    "trainable_param_sha256_after": reward_after,
+                }
+            )
+
+            env_bon = item["env_bon"]
+            scored = [
+                (float(record["reward"]), record["candidate"])
+                for record in env_bon["candidates"]
+            ]
+            scored.sort(key=lambda pair: pair[0], reverse=True)
+            best_score, _best = scored[0]
+            batches = [
+                {
+                    "ids": list(batch["ids"]),
+                    "prompt_tokens": int(batch["prompt_tokens"]),
+                    "signed_weight": float(batch["signed_weight"]),
+                }
+                for batch in env_bon["selected_batches"]
+            ]
+            bon_before = self._trainable_param_sha256()
+            self.last_adaptation_loss = self._train_lora_token_batches(
+                batches, lr=self.reward_pg_lr
+            )
+            bon_after = self._trainable_param_sha256()
+            self.bon_updates = getattr(self, "bon_updates", 0) + 1
+            operations.append(
+                {
+                    "operation": "bon_env_best_worst_sft",
+                    "batch_count": len(batches),
+                    "input_sha256": [
+                        batch["batch_sha256"]
+                        for batch in env_bon["selected_batches"]
+                    ],
+                    "trainable_param_sha256_before": bon_before,
+                    "trainable_param_sha256_after": bon_after,
+                }
+            )
+            replay_items.append(
+                {
+                    "sequence_index": item["sequence_index"],
+                    "instance_id": item["instance_id"],
+                    "instance_index": item["instance_index"],
+                    "integrity": dict(item["integrity"]),
+                    "sampling_provenance": dict(item["sampling_provenance"]),
+                    "item_sha256": item["item_sha256"],
+                    "best_env_reward": best_score,
+                    "status": "complete",
+                    "operation_count": 2,
+                    "operations": operations,
+                    "trainable_param_sha256_before": item_before,
+                    "trainable_param_sha256_after": bon_after,
+                }
+            )
+
+        final_hash = self._trainable_param_sha256()
+        replay_log = {
+            "status": "complete",
+            "digest_verified": True,
+            "tape_sha256": validated["tape_sha256"],
+            "item_count": len(replay_items),
+            "operations_per_item": 2,
+            "operation_count": 2 * len(replay_items),
+            "trainable_param_sha256_initial": initial_hash,
+            "trainable_param_sha256_final": final_hash,
+            "items": replay_items,
+        }
+        self._frozen_tape_last_digest = validated["tape_sha256"]
+        self._frozen_tape_replay_log.append(replay_log)
+        if float(self.reward_pg_lr) == 0.0:
+            if final_hash != initial_hash:
+                raise RuntimeError("LR0 frozen-tape replay changed trainable parameters")
+        elif final_hash == initial_hash:
+            raise RuntimeError("Active frozen-tape replay produced no parameter change")
+        return replay_log
+
+    def freeze_updates_for_heldout_eval(self) -> str:
+        """Hard-freeze every update path after replay for held-out evaluation."""
+        if self._frozen_tape_last_digest is None:
+            raise RuntimeError("Replay a validated frozen update tape before held-out eval")
+        self._frozen_tape_heldout_eval = True
+        self._pending_env_bon = None
+        super().set_parameter_updates_enabled(False)
+        return self._trainable_param_sha256()
 
     def _adapt_before_response(self, query_content: str) -> None:
         # history_ttt=False disables the self-supervised history pass independently
@@ -1136,13 +2201,12 @@ class QwenLocalSystem(ContinualLearningSystem):
     def _install_peft_adapter(self, config: Any, get_peft_model: Any) -> Any:
         """Install PEFT with an optional isolated, auditable adapter seed.
 
-        The seed is deliberately independent from ``grpo_run_seed``: formal
-        active/LR0 pairs and all proposer replicates must begin from the exact
-        same adapter, while ``grpo_run_seed`` remains free to vary candidate
-        proposals. ``fork_rng`` restores the caller's CPU and model-device RNG
-        streams after PEFT initialization.
+        The seed is deliberately independent from rollout/proposer seeds: formal
+        active/LR0 pairs must begin from the exact same adapter.  It applies to
+        both LoRA and prefix adapters, including the legacy ``reward_pg`` rule;
+        ``fork_rng`` restores caller CPU and model-device RNG streams.
         """
-        if not self._uses_instance_group_pg() or self.grpo_adapter_init_seed is None:
+        if self.adapter_init_seed is None:
             return get_peft_model(self._model, config)
 
         import torch
@@ -1157,10 +2221,10 @@ class QwenLocalSystem(ContinualLearningSystem):
                     else device.index
                 ]
         with torch.random.fork_rng(devices=cuda_devices):
-            torch.random.default_generator.manual_seed(self.grpo_adapter_init_seed)
+            torch.random.default_generator.manual_seed(self.adapter_init_seed)
             for cuda_device in cuda_devices:
                 with torch.cuda.device(cuda_device):
-                    torch.cuda.manual_seed(self.grpo_adapter_init_seed)
+                    torch.cuda.manual_seed(self.adapter_init_seed)
             return get_peft_model(self._model, config)
 
     def _train_lora_sequences(self, sequences: list[TTTBatch]) -> float:
@@ -2106,6 +3170,23 @@ class QwenLocalSystem(ContinualLearningSystem):
             "query_text": query_text,
             "candidates": uniq,
             "schema": schema,
+            "instance_index": instance_index,
+            "instance_id": instance_id,
+            "interaction_step": interaction_step,
+            "registered_run_seed": self.grpo_run_seed,
+            "sampling_prompt_sha256": hashlib.sha256(
+                (prompt_for_attempt + generation_prefix).encode("utf-8")
+            ).hexdigest(),
+            "candidate_sampling": {
+                "requested_group_size": self.best_of_n,
+                "initial_sample_attempts": initial_sample_attempts,
+                "rescue_sample_attempts": rescue_sample_attempts,
+                "generation_failures": generation_failures,
+                "parse_failures": parse_failures,
+                "duplicates": len(candidate_records) - len(unique_records),
+                "valid_unique": len(unique_records),
+                "candidate_count": len(uniq),
+            },
         }
         if self._uses_instance_group_pg():
             self._pending_env_bon.update(

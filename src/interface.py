@@ -11,6 +11,7 @@ import inspect
 import random as _random
 import statistics
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any, ClassVar, Optional
 
@@ -689,6 +690,9 @@ def run_task(
     reset_between_instances: bool = False,
     phase: str = "rollout",
     initial_query: Optional[Query] = None,
+    before_observe: Optional[
+        Callable[[int, Query, Response, TaskStepResult], None]
+    ] = None,
 ) -> TaskResult:
     """Run a task with the shared runtime runner implementation."""
     from .runtime.runner import run_task as _run_task
@@ -704,4 +708,5 @@ def run_task(
         reset_between_instances=reset_between_instances,
         phase=phase,
         initial_query=initial_query,
+        before_observe=before_observe,
     )

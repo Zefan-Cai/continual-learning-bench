@@ -71,6 +71,21 @@ def _default_dataset_dir(schedule_id: str = "default") -> Path:
     return Path(__file__).resolve().parents[3] / "data" / "cohort_studies" / schedule_id
 
 
+def cohort_instance_id(schedule_id: str, variant_id: str) -> str:
+    """Return the stable identity of one frozen cohort-study instance.
+
+    The original benchmark exposed ``cohort_studies:{variant_id}``, so the
+    default schedule must retain that exact namespace for old traces and
+    baselines.  Non-default frozen schedules can reuse the same variant names
+    for different generated populations; qualify those identities by schedule
+    to keep adaptation and held-out corpora distinct.
+    """
+
+    if schedule_id == "default":
+        return f"cohort_studies:{variant_id}"
+    return f"cohort_studies:{schedule_id}:{variant_id}"
+
+
 # ---------------------------------------------------------------------------
 # Instance descriptor
 # ---------------------------------------------------------------------------
@@ -415,6 +430,11 @@ class CohortStudiesTask(ContinualLearningTask):
 
     # -- Instance lifecycle -------------------------------------------------
 
+    def _instance_id(self, inst: _StudyInstance) -> str:
+        """Return this task's corpus-qualified identity for ``inst``."""
+
+        return cohort_instance_id(self.schedule_id, inst.variant_id)
+
     def _start_instance(self) -> Query:
         inst = self.instances[self.current_instance_idx]
 
@@ -448,10 +468,11 @@ class CohortStudiesTask(ContinualLearningTask):
         return Query(
             prompt=prompt,
             response_schema=ToolCallResponse,
-            instance_id=f"cohort_studies:{inst.variant_id}",
+            instance_id=self._instance_id(inst),
             instance_index=self.current_instance_idx,
             metadata={
                 "instance_idx": self.current_instance_idx,
+                "schedule_id": self.schedule_id,
                 "study_name": inst.study_name,
                 "variant_id": inst.variant_id,
                 "region_slice": inst.region_slice,
@@ -476,10 +497,11 @@ class CohortStudiesTask(ContinualLearningTask):
         return Query(
             prompt=prompt,
             response_schema=ToolCallResponse,
-            instance_id=f"cohort_studies:{inst.variant_id}",
+            instance_id=self._instance_id(inst),
             instance_index=self.current_instance_idx,
             metadata={
                 "instance_idx": self.current_instance_idx,
+                "schedule_id": self.schedule_id,
                 "study_name": inst.study_name,
                 "step": step,
                 "budget": self.action_budget,
@@ -517,10 +539,11 @@ class CohortStudiesTask(ContinualLearningTask):
             observation=Observation(content=obs_text, instance_complete=False),
             next_query=Query(
                 prompt=prompt,
-                instance_id=f"cohort_studies:{inst.variant_id}",
+                instance_id=self._instance_id(inst),
                 instance_index=self.current_instance_idx,
                 metadata={
                     "instance_idx": self.current_instance_idx,
+                    "schedule_id": self.schedule_id,
                     "study_name": inst.study_name,
                     "step": "submission_extraction",
                 },
@@ -604,6 +627,7 @@ class CohortStudiesTask(ContinualLearningTask):
     ) -> InstanceOutcome:
         record = {
             "instance_idx": self.current_instance_idx,
+            "schedule_id": self.schedule_id,
             "study_name": inst.study_name,
             "variant_id": inst.variant_id,
             "stage_index": inst.stage_index,
@@ -620,7 +644,7 @@ class CohortStudiesTask(ContinualLearningTask):
         self._score_history.append(record)
 
         outcome = InstanceOutcome(
-            instance_id=f"cohort_studies:{inst.variant_id}",
+            instance_id=self._instance_id(inst),
             instance_index=self.current_instance_idx,
             # Report the bits-saved information gain (B − A) as the reward.
             # The per-instance ceiling is mean_reference_kl itself (a perfect
@@ -632,6 +656,7 @@ class CohortStudiesTask(ContinualLearningTask):
             raw_metric_value=round(result.score, 6),
             raw_metric_higher_is_better=True,
             metadata={
+                "schedule_id": self.schedule_id,
                 "study_name": inst.study_name,
                 "mean_kl_divergence": result.mean_kl_divergence,
                 "mean_reference_kl": result.mean_reference_kl,

@@ -1,0 +1,190 @@
+#!/usr/bin/env python3
+"""Assemble the six audited cell artifacts into one formal validator input."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+from typing import Any
+
+from run_cohort_causal import (
+    ROOT,
+    _collector_manifest_path,
+    _dataset_projection,
+    _resolve,
+    load_grid,
+    load_provenance,
+)
+from validate_cohort_causal_results import (
+    EXPERIMENT,
+    LIMITATION,
+    MECHANISM_LABEL,
+    SCHEMA_VERSION,
+    canonical_sha256,
+    tape_item_sha256,
+    tape_sha256,
+)
+
+
+def _atomic_write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8") + b"\n"
+    temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    with temporary.open("xb") as handle:
+        handle.write(encoded)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text())
+    if not isinstance(value, dict):
+        raise ValueError(f"expected JSON object: {path}")
+    return value
+
+
+def _verify_tape(tape: dict[str, Any]) -> dict[str, Any]:
+    embedded = tape.get("tape_sha256")
+    if embedded != tape_sha256(tape):
+        raise ValueError("tape root digest verification failed during assembly")
+    items = tape.get("items")
+    if not isinstance(items, list) or not items:
+        raise ValueError("tape contains no items")
+    verification_rows = []
+    for position, item in enumerate(items):
+        if not isinstance(item, dict) or item.get("sequence_index") != position:
+            raise ValueError(f"non-canonical tape item at position {position}")
+        if item.get("item_sha256") != tape_item_sha256(item):
+            raise ValueError(f"tape item digest failed at position {position}")
+        verification_rows.append(
+            {
+                "sequence_index": position,
+                "item_sha256": item["item_sha256"],
+                "digest_verified": True,
+            }
+        )
+    return {"digest_verified": True, "items": verification_rows}
+
+
+def assemble_manifest(
+    *,
+    root: Path,
+    grid: dict[str, Any],
+    provenance: dict[str, Any],
+    preregistration_path: Path,
+) -> dict[str, Any]:
+    if grid.get("kind") != "formal":
+        raise ValueError("the publication manifest can only be assembled from formal grid")
+    collectors = {
+        row["run_seed"]: row for row in grid.get("collectors", [])
+    }
+    cells = {
+        (row["run_seed"], row["arm"]): row
+        for row in grid.get("evaluation_cells", [])
+    }
+    if len(collectors) != 3 or len(cells) != 6:
+        raise ValueError("formal grid must contain 3 collectors and 6 replay cells")
+
+    pairs: list[dict[str, Any]] = []
+    for run_seed in sorted(collectors):
+        collector_cfg = collectors[run_seed]
+        collector_manifest = _load_json(
+            _collector_manifest_path(root, collector_cfg)
+        )
+        if (
+            collector_manifest.get("status") != "completed"
+            or collector_manifest.get("run_seed") != run_seed
+            or collector_manifest.get("trainable_param_sha256_initial")
+            != collector_manifest.get("trainable_param_sha256_final")
+        ):
+            raise ValueError(f"collector integrity failure for seed {run_seed}")
+        if canonical_sha256(collector_manifest.get("provenance")) != canonical_sha256(
+            provenance
+        ):
+            raise ValueError(f"collector provenance mismatch for seed {run_seed}")
+        tape_path = _resolve(root, collector_cfg["tape_path"])
+        tape = _load_json(tape_path)
+        verification = _verify_tape(tape)
+        if tape.get("tape_sha256") != collector_manifest.get("tape_sha256"):
+            raise ValueError(f"collector/tape digest mismatch for seed {run_seed}")
+        if verification != collector_manifest.get("tape_verification"):
+            raise ValueError(f"collector verification mismatch for seed {run_seed}")
+
+        active_cfg = cells[(run_seed, "active")]
+        lr0_cfg = cells[(run_seed, "lr0")]
+        active = _load_json(_resolve(root, active_cfg["cell_manifest_path"]))
+        lr0 = _load_json(_resolve(root, lr0_cfg["cell_manifest_path"]))
+        for arm, cell in (("active", active), ("lr0", lr0)):
+            if cell.get("status") != "completed" or cell.get("arm") != arm:
+                raise ValueError(f"incomplete {arm} cell for seed {run_seed}")
+            if cell.get("tape_sha256") != tape["tape_sha256"]:
+                raise ValueError(f"{arm} cell consumed wrong tape for seed {run_seed}")
+            if canonical_sha256(cell.get("provenance")) != canonical_sha256(provenance):
+                raise ValueError(f"{arm} provenance mismatch for seed {run_seed}")
+        if active_cfg["pair_id"] != lr0_cfg["pair_id"]:
+            raise ValueError(f"pair ID mismatch for seed {run_seed}")
+        pairs.append(
+            {
+                "pair_id": active_cfg["pair_id"],
+                "run_seed": run_seed,
+                "tape": tape,
+                "tape_verification": verification,
+                "active": active,
+                "lr0": lr0,
+            }
+        )
+
+    preregistration_bytes = preregistration_path.read_bytes()
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "experiment": EXPERIMENT,
+        "protocol": grid["protocol"],
+        "mechanism_label": MECHANISM_LABEL,
+        "limitation": LIMITATION,
+        "preregistration_sha256": hashlib.sha256(preregistration_bytes).hexdigest(),
+        "provenance": provenance,
+        "corpora": {
+            "adaptation": _dataset_projection(root, grid, "adaptation"),
+            "heldout": _dataset_projection(root, grid, "heldout"),
+        },
+        "pairs": pairs,
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--grid", type=Path, required=True)
+    parser.add_argument("--provenance", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--preregistration",
+        type=Path,
+        default=ROOT / "COHORT_QONLY_CAUSAL_PREREG.md",
+    )
+    parser.add_argument("--root", type=Path, default=ROOT)
+    args = parser.parse_args()
+    output = args.output.resolve()
+    if output.exists():
+        raise SystemExit(f"refusing to overwrite formal manifest: {output}")
+    manifest = assemble_manifest(
+        root=args.root.resolve(),
+        grid=load_grid(args.grid.resolve()),
+        provenance=load_provenance(args.provenance.resolve()),
+        preregistration_path=args.preregistration.resolve(),
+    )
+    _atomic_write_json(output, manifest)
+    print(f"wrote {output}")
+
+
+if __name__ == "__main__":
+    main()

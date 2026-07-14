@@ -10,6 +10,7 @@ import os
 import signal
 import threading
 import time
+from collections.abc import Callable
 from typing import Any, Optional, get_origin
 
 from ..errors import ProviderRefusalError
@@ -311,6 +312,9 @@ def run_task(
     reset_between_instances: bool = False,
     phase: str = "rollout",
     initial_query: Optional[Query] = None,
+    before_observe: Optional[
+        Callable[[int, Query, Response, TaskStepResult], None]
+    ] = None,
 ) -> TaskResult:
     """
     Run a continual learning task with a given system.
@@ -334,6 +338,10 @@ def run_task(
         phase: Human-readable run phase for progress logging.
         initial_query: Optional pre-built first query. When provided, the runner
             skips ``task.reset()`` and starts from this query directly.
+        before_observe: Optional fail-closed hook invoked after task scoring and
+            reward metadata attachment but immediately before ``system.observe``.
+            It is intended for auditable post-commit capture such as a frozen
+            update tape; normal runs should leave it unset.
 
     Returns:
         TaskResult with evaluation metrics
@@ -584,6 +592,8 @@ def run_task(
                 feedback_outcome = synced_outcomes[-1]
             _attach_env_feedback_metadata(step_result.observation, feedback_outcome)
 
+            if before_observe is not None:
+                before_observe(step, query, response, step_result)
             system.observe(step_result.observation, step_result.next_query)
             observe_events = serialize_usage_events(system.consume_usage_events())
 

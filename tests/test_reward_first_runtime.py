@@ -375,6 +375,51 @@ class RewardFirstRuntimeTests(unittest.TestCase):
             ["instance-0", "instance-1", "instance-2"],
         )
 
+    def test_before_observe_hook_sees_post_commit_reward_and_runs_first(self):
+        task = TwoInstanceTask()
+        system = CountingSystem()
+        events: list[tuple[str, str, float]] = []
+
+        def hook(
+            step: int,
+            query: Query,
+            response: Response,
+            step_result: TaskStepResult,
+        ) -> None:
+            del step, response
+            reward = float(
+                step_result.observation.metadata["env_feedback_reward"]
+            )
+            events.append(("hook", str(query.instance_id), reward))
+
+        def observe(observation: Observation, next_query: Query | None) -> None:
+            del next_query
+            events.append(
+                (
+                    "observe",
+                    str(observation.metadata["env_feedback_instance_id"]),
+                    float(observation.metadata["env_feedback_reward"]),
+                )
+            )
+
+        system.observe = observe  # type: ignore[method-assign]
+        run_task(
+            task,
+            system,
+            show_progress=False,
+            before_observe=hook,
+        )
+
+        self.assertEqual(
+            events,
+            [
+                ("hook", "instance-0", 1.0),
+                ("observe", "instance-0", 1.0),
+                ("hook", "instance-1", 2.0),
+                ("observe", "instance-1", 2.0),
+            ],
+        )
+
     def test_run_task_skips_system_when_initial_query_is_terminal(self):
         task = TerminalOnResetTask()
         system = CountingSystem()
