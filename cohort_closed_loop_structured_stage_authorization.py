@@ -80,7 +80,7 @@ TRIGGER_B = "causal_pass_online_internal_screen_valid_no_go"
 CAUSAL_PROTOCOL_SEAL_STATUS = "not_applicable_existing_implementation_has_none"
 PRELAUNCH_ELIGIBILITY_SCOPE = "eligible_for_one_registered_stage_launch_claim"
 EXECUTION_CONTRACT_SHA256 = (
-    "47755097a112132d20e2cbaa76e71a0948930966cd410b51714323b0a80f1828"
+    "447048660d396799f32c6b2ba55acb5b9ac6cf91eb761c7a455a56e64a41cfc1"
 )
 
 REQUIRED_SOURCE_BINDING_IDS: tuple[str, ...] = tuple(
@@ -92,6 +92,9 @@ REQUIRED_SOURCE_BINDING_IDS: tuple[str, ...] = tuple(
             "structured_dgp_context_validation",
             "structured_stage_authorization",
             "structured_atomic_publisher",
+            "structured_deployment_snapshot",
+            "structured_protocol_plan",
+            "structured_trigger_bridge",
             "trigger_receipt_builder",
             "trigger_receipt_revalidator",
             "dgp_generator",
@@ -114,7 +117,10 @@ REQUIRED_SOURCE_BINDING_IDS: tuple[str, ...] = tuple(
             "independent_private_validator",
             "report_serializer",
             "environment_lock",
+            "private_access_probe_source",
             "private_context_access_boundary",
+            "structured_dgp_claim_adapter",
+            "structured_dgp_completion_adapter",
         }
     )
 )
@@ -128,6 +134,7 @@ REQUIRED_ASSET_BINDING_IDS: tuple[str, ...] = tuple(
             "task",
             "schema",
             "official_scorer",
+            "private_access_probe_binary",
             "cohort_layer_inventory",
             "structured_raw_policy_config",
             "canonical_online_icl_config",
@@ -157,10 +164,11 @@ PATH_LAYOUT_TEMPLATES: dict[str, str] = {
         "{stage_root}/dgp/corpora/{block_id}/{phase}/rows/{item_id}.json"
     ),
     "context_attestation_path_template": (
-        "{stage_root}/contexts/{block_id}/{phase}/{item_id}/public_attestation.json"
+        "{stage_root}/dgp/contexts/{block_id}/{phase}/{item_id}/public_attestation.json"
     ),
     "context_registry_digest_path_template": (
-        "{stage_root}/contexts/{block_id}/{phase}/{item_id}/registry_digest_record.json"
+        "{stage_root}/dgp/contexts/{block_id}/{phase}/{item_id}/"
+        "registry_digest_record.json"
     ),
     "precommit_path_template": (
         "{stage_root}/precommits/{block_id}/{phase}/{item_id}/{family}.json"

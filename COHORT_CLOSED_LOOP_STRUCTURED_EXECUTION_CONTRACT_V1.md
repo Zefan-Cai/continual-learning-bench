@@ -440,35 +440,41 @@ The structured protocol-plan seal cannot be published until exact source records
 exist for all of these roles:
 
 ```text
-structured_state
-structured_commitments
-structured_execution_validation
-structured_dgp_context_validation
-structured_stage_authorization
-structured_atomic_publisher
-trigger_receipt_builder
-trigger_receipt_revalidator
-dgp_generator
 context_registrar
-pure_scorer
-stage_grid_builder
-runner
-launcher
-wrapper
-provenance_builder
-protocol_seal_builder
-stage_plan_builder
 dgp_completion_validator
-stage_protocol_seal_builder
-launch_expectation_builder
-prelaunch_gate_builder
-stage_assembler
-smoke_validator
+dgp_generator
+environment_lock
 formal_validator
 independent_private_validator
-report_serializer
-environment_lock
+launch_expectation_builder
+launcher
+prelaunch_gate_builder
+private_access_probe_source
 private_context_access_boundary
+protocol_seal_builder
+provenance_builder
+pure_scorer
+report_serializer
+runner
+smoke_validator
+stage_assembler
+stage_grid_builder
+stage_plan_builder
+stage_protocol_seal_builder
+structured_atomic_publisher
+structured_commitments
+structured_deployment_snapshot
+structured_dgp_claim_adapter
+structured_dgp_completion_adapter
+structured_dgp_context_validation
+structured_execution_validation
+structured_protocol_plan
+structured_stage_authorization
+structured_state
+structured_trigger_bridge
+trigger_receipt_builder
+trigger_receipt_revalidator
+wrapper
 ```
 
 Each source record has exact role, path, size, and SHA-256. No role may share a
@@ -478,16 +484,17 @@ plan seal binds the clean source commit and the complete sorted inventory.
 The exact asset roles are:
 
 ```text
+canonical_online_icl_config
+cohort_layer_inventory
+environment
 model_config
 model_state_dict
-tokenizer
-environment
-task
-schema
 official_scorer
-cohort_layer_inventory
+private_access_probe_binary
+schema
 structured_raw_policy_config
-canonical_online_icl_config
+task
+tokenizer
 ```
 
 The raw-policy and canonical comparator configurations are the exact canonical
@@ -590,8 +597,8 @@ Blocks and corpus order are the exact identifiers defined by
 ```text
 dgp/corpora/<block_id>/<phase>/corpus_inventory.json
 dgp/corpora/<block_id>/<phase>/rows/<item_id>.json
-contexts/<block_id>/<phase>/<item_id>/public_attestation.json
-contexts/<block_id>/<phase>/<item_id>/registry_digest_record.json
+dgp/contexts/<block_id>/<phase>/<item_id>/public_attestation.json
+dgp/contexts/<block_id>/<phase>/<item_id>/registry_digest_record.json
 raw_traces/<block_id>/<phase>/<item_id>/structured_shared.json
 raw_traces/<block_id>/<phase>/<item_id>/canonical_online_icl.json
 precommits/<block_id>/<phase>/<item_id>/structured.json
@@ -669,23 +676,133 @@ every registered pending path to be absent; a poison closure instead preserves
 and reports the applicable pending path.
 
 Hidden registry contents are never stored beneath the operator-readable
-`durable_root`. Before a protocol-plan seal can exist, deployment must register
-a separate `private_context_root` protected by a distinct service identity and
-an access-control boundary that denies the experiment operator and launcher
-direct read access while allowing only the registrar, pure-scorer service, and
-independent private-validator service. The public durable tree stores only the
-registered digest record and public attestation shown above.
+`durable_root`. Every stage attempt receives a distinct, single-use private
+epoch. For source commit `<source_commit>`, experiment attempt
+`<experiment_attempt_id>`, stage `<stage_kind>`, and stage attempt
+`<stage_attempt_id>`, the roots are exactly:
 
-The protocol-plan seal binds the private service identity, private-root
-attestation, access-policy digest, and positive/negative access-test receipt.
-The prelaunch gate is invalid unless a fresh test proves the permitted services
-can resolve a registered test handle and the operator/launcher identities
-cannot read or enumerate the private registry. Same-UID file permissions, an
-ordinary `0700` subdirectory, an environment variable, or an operator-held
-encryption key does not satisfy this boundary. If the platform cannot provide
-the boundary, production execution remains blocked.
+```text
+public stage root:
+  <durable_root>/stages/<stage_kind>/<stage_attempt_id>
+private context root:
+  /sensei-fs/private/zcai/TTT-RL/cohort-closed-loop-structured-state/
+    <source_commit>/attempts/<experiment_attempt_id>/stages/
+    <stage_kind>/<stage_attempt_id>/private-context
+private record root:
+  <private_context_root>/records
+private record:
+  <private_record_root>/<block_id>/<phase>/<item_id>.json
+public private-boundary evidence root:
+  <public_stage_root>/control/private_boundary
+initial probe receipt:
+  <evidence_root>/initial/probes/<probe_id>.json
+initial attestation:
+  <evidence_root>/initial/attestation.json
+registry completion receipt:
+  <evidence_root>/registry/registry_completion.v2.json
+sealed probe receipt:
+  <evidence_root>/sealed/probes/<probe_id>.json
+sealed attestation:
+  <evidence_root>/sealed/attestation.json
+```
+
+`experiment_attempt_id` and `stage_attempt_id` are independent exact
+`attempt-[0-9]{3}` identifiers. A stage attempt may not reuse another stage's
+private root, evidence root, probe receipt, attestation, registry-completion
+receipt, or record pathname. The private lifecycle is exactly: create a unique
+empty read-write epoch; atomically publish all 14 registered initial probe
+receipts and then the initial attestation last; write exactly the mapped private
+records; atomically publish registry completion v2; remount the same epoch
+read-only; and atomically publish all 9 registered sealed probe receipts and
+then the sealed attestation last. Every receipt uses the common deterministic
+intent/pending/no-replace-hardlink publisher. Any missing receipt, existing
+intent, present pending name, partial phase, pathname collision, changed epoch
+identity, or attempted reuse is poison and grants no authority.
+
+The stage plan contains only a mapping plan. Its plan entries bind stage,
+block, block index, phase, item, instance index, exact DGP row/public
+attestation/public digest-record paths, and exact private relative and absolute
+paths. The later top-level
+`cohort_structured_private_context_registry_completion_receipt_v2`, schema 2,
+contains one sorted entry per private record with exactly these fields:
+
+```text
+stage_kind
+block_id
+block_index
+phase
+item_id
+instance_index
+instance_id
+public_context_identity_sha256
+opaque_handle_sha256
+relative_path
+hidden_sha256
+size_bytes
+```
+
+The completion producer derives the first ten identity/path fields by joining
+the validated DGP row, public attestation, digest record, and mapping plan; it
+derives `hidden_sha256` and `size_bytes` from every exact private-record byte
+string. Plan-time pending placeholders are not a completed mapping. The sealed
+boundary independently performs two stable scans of every registered record on
+the read-only epoch and joins every completion entry; one sampled record or an
+aggregate-only digest is insufficient.
+
+The registrar owns the private tree as UID `41011`, group `41016`, with
+directories `0750` and records `0440`. The control attester is UID/GID `41001`
+with supplementary private-read group `41016`; pure scorer and independent
+private-validator identities are separately registered, while launcher UID
+`41014` and operator UID `41015` cannot read or enumerate the tree. The
+root-owned `private_access_probe_binary` at
+`/usr/local/libexec/cohort-structured-private-context-access-probe` and its
+`private_access_probe_source` are independently source/asset bound. Deployment
+must prove its exact ownership, `04750` mode, link count, mount options, ACL,
+extended attributes, file capabilities, and descriptor identity before the
+attester executes it by an already-open descriptor. Pathname-only execution is
+invalid.
+
+The protocol-plan and applicable stage plan bind all identities, roots,
+policies, binary/source bytes, fixed probe inventories, and publication paths.
+The prelaunch gate remains invalid unless fresh tests prove permitted services
+can resolve every registered handle and operator/launcher identities cannot
+read or enumerate the private registry. Same-UID permissions, an ordinary
+`0700` subdirectory, an environment variable, or an operator-held encryption
+key does not satisfy this boundary. If the platform cannot provide the exact
+boundary, production execution remains blocked.
 
 ## Stage plan and DGP generation
+
+The v2 stage-plan bridge is a fresh consumer of the strict Trigger-A bridge,
+strict trigger receipt and all 21 raw trigger evidence edges, deployment
+snapshot, capture lease, both complete deployment observations, Git index,
+source inventory and every source byte, asset inventories and every asset byte,
+this execution contract, structured preregistration, and protocol-plan seal.
+It reruns the complete raw-byte protocol-plan validator and accepts no embedded
+hash or path in place of the corresponding bytes. The derived
+`experiment_attempt_id` comes only from that validated upstream closure;
+`stage_attempt_id` is a separate caller-supplied identifier.
+
+Only a smoke plan with an exactly empty parent-transition tuple can currently
+be sealed. Internal and confirmation builders fail closed until their semantic
+parent-transition validators exist. A v2 smoke plan records every authority as
+false and declares every required runtime provider unavailable, including the
+DGP generator invocation, exact Python runtime, closed-environment attester,
+job identity, node identity, GPU inventory, stdio, network isolation,
+controlled process launcher, private boundary, atomic claim adapter, and DGP
+completion adapter. A bound generator source, argv template, resource policy,
+or path inventory is not provider availability and grants no import, DGP,
+model, scorer, launch, or operational authority.
+
+The only generator output root is
+`<public_stage_root>/dgp`. The stage plan enumerates only DGP/context base
+outputs under that root: stage manifest, corpus inventories, DGP row
+identities, public context attestations, and public registry digest records.
+Each entry binds an absolute path, a relative path rooted at `dgp`, writer
+service, deterministic publication intent, and deterministic pending path.
+Private records and private-boundary evidence have separate inventories and
+must never be admitted as generator outputs. No whole-stage output root,
+wildcard, unregistered context path, or output outside `dgp` is valid.
 
 Every completed stage publishes a no-overwrite transition receipt with the
 exact top-level schema:
@@ -787,12 +904,24 @@ sealed inventory, private-validation pair, poison receipt, validator sources,
 protocol-seal/trigger/grid/provenance joins, and exact parent-attempt chain. It
 does not authorize from bound report bytes without semantic reconstruction.
 
-Before writing any DGP output, the generator creates
-`control/dgp_generation.claim.json` with `O_CREAT|O_EXCL`. It binds the trigger
-receipt, protocol-plan seal, stage plan full file hashes, generator source and
-runtime, exact argv/cwd/nonsecret-environment digest, process ID/start ticks,
-boot ID, node identity, and the complete output path inventory. It may then
-write only declared DGP/context paths.
+Before importing the generator or writing any DGP output, a distinct claim
+adapter builds canonical `control/dgp_generation.claim.json` bytes that bind
+the strict trigger closure, protocol-plan seal, stage plan full file hash,
+generator and adapter source, exact runtime executable, argv, cwd,
+closed-environment digest, process ID/start ticks, boot ID, node/job identity,
+GPU inventory, stdio/network/launcher attestations, and the exact DGP-only
+output inventory. It reserves the claim's deterministic publication intent
+with `O_CREAT|O_EXCL`, creates the deterministic pending file with
+`O_CREAT|O_EXCL`, writes/fsyncs/chmods/fsyncs the pending bytes, and creates the
+final pathname by a no-replace hard link. Final-path visibility with link count
+two is neither commit nor authority. Unlinking the pending name and fsyncing the
+parent directory is the filesystem commit point. Only a fresh semantic
+revalidation proving the exact intent present, pending absent, single-link
+read-only final, and two stable raw observations can cross the generator-import
+boundary. This is the common atomic publisher's exact boundary; a direct final
+`O_EXCL` write or rename-based claim is invalid. Any collision or partial
+publication remains poison. After that boundary the generator may write only
+declared DGP/context paths.
 
 After DGP/context publication, an independent validator uses raw canonical
 current/prior manifest bytes to run the complete stage-integrity validation.
