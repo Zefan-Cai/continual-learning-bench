@@ -13,6 +13,7 @@ import pytest
 import run_cohort_online_icl as runner
 import validate_cohort_online_icl_results as validator
 import validate_cohort_online_icl_smoke as smoke_validator
+from src.tasks.cohort_studies.tool_schemas import build_submission_schema
 from validate_cohort_causal_results import canonical_sha256
 from validate_cohort_online_icl_results import validate_cell
 
@@ -169,6 +170,10 @@ def _outcome(role: str, index: int) -> SimpleNamespace:
 
 def _interaction(role: str, index: int, *, sealed: bool) -> dict:
     reward = 0.1 + 0.1 * index
+    schema = build_submission_schema()
+    action_payload = {field: 0.5 for field in schema.model_fields}
+    if index == 0:
+        action_payload[next(iter(schema.model_fields))] = 0.0
     return {
         "query": {
             "feedback": None,
@@ -176,10 +181,10 @@ def _interaction(role: str, index: int, *, sealed: bool) -> dict:
             "instance_index": index,
             "metadata": {},
             "prompt": f"{role} prompt {index}",
-            "response_schema": "FakeAction",
+            "response_schema": schema.__name__,
         },
         "response": {
-            "action": {"value": index},
+            "action": schema.model_validate(action_payload).model_dump(),
             "metadata": {
                 "generation_calls": 1,
                 "generation_input_tokens_total": 20,
@@ -335,7 +340,9 @@ def test_online_icl_runner_seals_restores_and_publishes_atomic_artifacts(
     monkeypatch.setattr(
         validator,
         "_independent_reward",
-        lambda action, **_kwargs: 0.1 + 0.1 * action["value"],
+        lambda _action, *, instance_id, **_kwargs: (
+            0.1 + 0.1 * int(instance_id.rsplit("-", 1)[1])
+        ),
     )
     bindings = runner.RuntimeBindings(
         system_cls=FakeSystem,

@@ -1,15 +1,15 @@
 {
-  "active_probe": "cohort_qonly_frozen_tape_causal_smoke_attempt_002",
-  "status": "running_blinded_liveness_only",
-  "mechanism_family": "frozen_tape_reward_pg_plus_env_bon_prefix_qonly",
+  "active_probe": "cohort_reward_aware_online_icl_v1_smoke_attempt_002",
+  "status": "prospective_revision_frozen_for_new_provenance_and_seal",
+  "mechanism_family": "frozen_tape_parameter_update_vs_reward_aware_online_icl",
   "job_name": "ttt-rl-causal-a40-p2-0",
   "job_id": "eeed73a4-e7c3-4d11-accb-24b39c1c2827",
   "pluto_priority": "P2_after_live_P1_capacity_zero",
-  "source_commit": "1caf142f6ce611da8da8691d4c336388a4c3c4b3",
+  "source_commit": "self_bound_by_runtime_provenance",
   "attempt": "attempt-002",
-  "next_gate": "sealed_two_instance_active_vs_lr0_causal_smoke",
-  "baseline": "byte_identical_frozen_tape_lr0_replay",
-  "primary_metric": "seed_level_heldout_active_minus_lr0_official_reward",
+  "next_gate": "independent_two_instance_online_icl_infrastructure_smoke",
+  "baseline": "canonical_reward_aware_online_icl_no_parameter_updates",
+  "primary_metric": "integrity_only_no_efficacy_interpretation",
   "success_threshold": {
     "all_three_seed_deltas_strictly_positive": true,
     "mean_delta_gte": 0.02,
@@ -18,8 +18,23 @@
   },
   "competitive_control": {
     "name": "cohort_reward_aware_online_icl_v1",
-    "status": "preoutcome_integrity_audited_independent_blind_smoke_pending_clean_push",
-    "launch_condition": "causal_smoke_pass_and_clean_pushed_protocol_seal"
+    "status": "attempt_001_infrastructure_invalid_attempt_002_pending_new_seal",
+    "launch_condition": "new_clean_pushed_source_provenance_and_protocol_seal"
+  },
+  "causal_prerequisite": {
+    "source_commit": "1caf142f6ce611da8da8691d4c336388a4c3c4b3",
+    "attempt": "attempt-002",
+    "smoke_gate": "pass",
+    "formal_started": false
+  },
+  "invalid_attempt": {
+    "attempt": "attempt-001",
+    "source_commit": "bd9bb0a2030b5b29699320f12d98517b790ab27c",
+    "failure_class": "snapshot_reconstruction_pydantic_serialization_mismatch",
+    "smoke_gate_created": false,
+    "automated_validator_processed_bound_efficacy": true,
+    "efficacy_surfaced_to_operator": false,
+    "efficacy_human_interpreted": false
   },
   "retired_routes": [
     "historical_group_pg_after_failed_candidate_diversity_gate",

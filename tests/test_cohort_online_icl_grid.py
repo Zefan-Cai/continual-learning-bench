@@ -438,7 +438,7 @@ def test_reward_visibility_seal_and_heldout_isolation_are_frozen() -> None:
         "atomic_no_overwrite_required": True,
         "binds_both_smoke_and_formal_grid_digests": True,
         "binds_exact_runtime_provenance": True,
-        "created_before_first_icl_outcome": True,
+        "created_before_first_outcome_under_current_protocol_seal": True,
         "same_artifact_and_source_commit_for_smoke_and_formal": True,
     }
 

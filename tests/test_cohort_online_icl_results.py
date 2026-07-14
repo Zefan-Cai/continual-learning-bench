@@ -14,6 +14,10 @@ import pytest
 import run_cohort_online_icl as runner
 import validate_cohort_online_icl_results as results_module
 import validate_cohort_online_icl_smoke as smoke_module
+from src.tasks.cohort_studies.tool_schemas import (
+    ToolCallResponse,
+    build_submission_schema,
+)
 from validate_cohort_online_icl_results import (
     PROTOCOL,
     assemble_internal_screen,
@@ -79,6 +83,192 @@ def integrity(*, retries: int = 0, repairs: int = 0) -> dict:
     }
 
 
+def _canonical_trace_action(action_model) -> dict:
+    """Round-trip a structured action through the canonical trace encoding."""
+
+    return json.loads(
+        json.dumps(
+            action_model.model_dump(),
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    )
+
+
+def test_assistant_record_replays_tool_schema_runtime_serialization() -> None:
+    action_model = ToolCallResponse.model_validate(
+        {
+            "thought": "inspect",
+            "tool_call": {"sql": "SELECT 1", "tool": "query_sql"},
+        }
+    )
+    trace_action = _canonical_trace_action(action_model)
+    runtime_record = action_model.model_dump_json()
+
+    # Canonical trace storage sorts nested keys and therefore cannot itself be
+    # used as the byte-exact prompt-bearing assistant record.
+    assert (
+        json.dumps(
+            trace_action,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        != runtime_record
+    )
+    assert (
+        results_module._assistant_record(
+            trace_action,
+            response_schema_name="ToolCallResponse",
+        )
+        == runtime_record
+    )
+
+
+def test_assistant_record_replays_submission_schema_runtime_serialization() -> None:
+    schema = build_submission_schema()
+    action_model = schema.model_validate(
+        {field: 0.5 for field in reversed(schema.model_fields)}
+    )
+    trace_action = _canonical_trace_action(action_model)
+
+    assert (
+        results_module._assistant_record(
+            trace_action,
+            response_schema_name="CohortSubmission",
+        )
+        == action_model.model_dump_json()
+    )
+
+
+def test_assistant_record_rejects_unknown_or_invalid_recorded_schema() -> None:
+    for schema_name in ("UnknownAction", None, 7):
+        with pytest.raises(ValueError, match="unregistered response schema"):
+            results_module._assistant_record(
+                {"value": 1},
+                response_schema_name=schema_name,
+            )
+    with pytest.raises(ValueError, match="does not validate"):
+        results_module._assistant_record(
+            {"value": 1},
+            response_schema_name="ToolCallResponse",
+        )
+
+
+@pytest.mark.parametrize(
+    ("schema_name", "action"),
+    [
+        (
+            "ToolCallResponse",
+            {
+                "extra": "not emitted by model_dump",
+                "thought": "inspect",
+                "tool_call": {"tool": "get_database_metadata"},
+            },
+        ),
+        (
+            "ToolCallResponse",
+            {
+                "thought": "inspect",
+                "tool_call": {
+                    "extra": "ignored by _ToolBase",
+                    "tool": "get_database_metadata",
+                },
+            },
+        ),
+        (
+            "ToolCallResponse",
+            {
+                "tool_call": {
+                    "thought": "normalised to the top level",
+                    "tool": "get_database_metadata",
+                }
+            },
+        ),
+        (
+            "CohortSubmission",
+            {
+                **{field: 0.5 for field in build_submission_schema().model_fields},
+                next(iter(build_submission_schema().model_fields)): "0.5",
+            },
+        ),
+    ],
+)
+def test_assistant_record_rejects_actions_changed_by_schema_normalisation(
+    schema_name: str,
+    action: dict,
+) -> None:
+    with pytest.raises(ValueError, match="does not validate"):
+        results_module._assistant_record(
+            action,
+            response_schema_name=schema_name,
+        )
+
+
+def test_snapshot_reconstruction_replays_both_runtime_response_schemas() -> None:
+    tool_action = ToolCallResponse.model_validate(
+        {
+            "thought": "inspect",
+            "tool_call": {"sql": "SELECT 1", "tool": "query_sql"},
+        }
+    )
+    submission_schema = build_submission_schema()
+    submission_action = submission_schema.model_validate(
+        {field: 0.5 for field in submission_schema.model_fields}
+    )
+
+    def interaction(*, prompt: str, action_model) -> dict:
+        return {
+            "observation": {
+                "content": "tool result",
+                "instance_complete": False,
+                "metadata": {},
+            },
+            "query": {
+                "feedback": None,
+                "prompt": prompt,
+                "response_schema": action_model.__class__.__name__,
+            },
+            "response": {"action": _canonical_trace_action(action_model)},
+        }
+
+    class TraceTokenizer:
+        @staticmethod
+        def apply_chat_template(messages, **_kwargs) -> str:
+            return json.dumps(messages, sort_keys=True, separators=(",", ":"))
+
+        @staticmethod
+        def encode(rendered: str, **_kwargs) -> list[int]:
+            return list(rendered.encode())
+
+    state = results_module._reconstruct_adaptation_snapshot_state(
+        trace={
+            "interactions": [
+                interaction(prompt="inspect", action_model=tool_action),
+                interaction(prompt="submit", action_model=submission_action),
+            ]
+        },
+        system_params={
+            "context_policy": "full",
+            "inject_env_reward": True,
+            "max_context_tokens": 32768,
+            "system_prompt": "",
+        },
+        tokenizer=TraceTokenizer(),
+    )
+    assistant_records = [
+        message["content"]
+        for message in state["messages"]
+        if message["role"] == "assistant"
+    ]
+    assert assistant_records == [
+        tool_action.model_dump_json(),
+        submission_action.model_dump_json(),
+    ]
+
+
 def smoke_cell_integrity() -> dict:
     return {
         "adaptation_trace_file_sha256": "c" * 64,
@@ -111,7 +301,12 @@ def adaptation_reward_trace() -> tuple[dict, dict, list[str]]:
     task_params = {"dataset_path": "adaptation"}
 
     def interaction(
-        *, action: dict, complete: bool, metadata: dict, prompt: str
+        *,
+        action: dict,
+        complete: bool,
+        metadata: dict,
+        prompt: str,
+        response_schema: str,
     ) -> dict:
         return {
             "observation": {
@@ -124,6 +319,7 @@ def adaptation_reward_trace() -> tuple[dict, dict, list[str]]:
                 "instance_id": instance_id,
                 "instance_index": 0,
                 "prompt": prompt,
+                "response_schema": response_schema,
             },
             "response": {
                 "action": action,
@@ -136,13 +332,23 @@ def adaptation_reward_trace() -> tuple[dict, dict, list[str]]:
         "instance_outcomes": [outcome],
         "interactions": [
             interaction(
-                action={"tool": "query"},
+                action=ToolCallResponse.model_validate(
+                    {
+                        "thought": "inspect",
+                        "tool_call": {"tool": "get_database_metadata"},
+                    }
+                ).model_dump(),
                 complete=False,
                 metadata={},
                 prompt="inspect study",
+                response_schema="ToolCallResponse",
             ),
             interaction(
-                action={"estimate": 0.5},
+                action=build_submission_schema()
+                .model_validate(
+                    {field: 0.5 for field in build_submission_schema().model_fields}
+                )
+                .model_dump(),
                 complete=True,
                 metadata={
                     "env_feedback_instance_id": instance_id,
@@ -150,6 +356,7 @@ def adaptation_reward_trace() -> tuple[dict, dict, list[str]]:
                     "env_feedback_reward": 0.25,
                 },
                 prompt="submit report",
+                response_schema="CohortSubmission",
             ),
         ],
         "phase": "rollout",

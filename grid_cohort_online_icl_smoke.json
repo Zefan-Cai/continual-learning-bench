@@ -4,7 +4,7 @@
   "base_causal_implementation_commit": "1caf142f6ce611da8da8691d4c336388a4c3c4b3",
   "preregistration": {
     "path": "COHORT_MATCHED_ICL_PREREG_V1.md",
-    "sha256": "e5cfb706d00b5897205afe3fdad457442515d0433509244b30d3184adf0b212e"
+    "sha256": "741f0b6753117c6dbc12e9def1d9f5823c5575d84694dcbfce77d31151dadf79"
   },
   "paired_causal_grid": {
     "path": "grid_cohort_causal_smoke.json",
@@ -100,7 +100,7 @@
           "atomic_no_overwrite_required": true,
           "binds_both_smoke_and_formal_grid_digests": true,
           "binds_exact_runtime_provenance": true,
-          "created_before_first_icl_outcome": true,
+          "created_before_first_outcome_under_current_protocol_seal": true,
           "same_artifact_and_source_commit_for_smoke_and_formal": true
         },
         "online_adaptation": {
@@ -180,15 +180,15 @@
           ]
         }
       },
-      "execution_contract_sha256": "a335c4d03a71d0f919aa417e21cef55839bf44a2014180f5cef3c5c3154abaec",
+      "execution_contract_sha256": "5690cecd1e55f1c926f68b696882dbd851eef3c3c5a7cab2136683f5d7633ebb",
       "adaptation_trace_path": "artifacts/cohort_online_icl/cohort_online_icl_smoke_seed2026071498_n2.adaptation.trace.json",
       "cell_manifest_path": "artifacts/cohort_online_icl/cohort_online_icl_smoke_seed2026071498_n2.manifest.json",
       "context_inventory_path": "artifacts/cohort_online_icl/cohort_online_icl_smoke_seed2026071498_n2.context_inventory.json",
       "heldout_trace_path": "artifacts/cohort_online_icl/cohort_online_icl_smoke_seed2026071498_n2.heldout.trace.json",
       "restoration_audit_path": "artifacts/cohort_online_icl/cohort_online_icl_smoke_seed2026071498_n2.restoration_audit.json",
       "snapshot_path": "artifacts/cohort_online_icl/cohort_online_icl_smoke_seed2026071498_n2.sealed_snapshot.json",
-      "cell_config_sha256": "13a4b6f23668c39245c91c06845aec9a810c31c09dd4e6f58c44c54f6d6acfe4"
+      "cell_config_sha256": "50dec21ce030c34a74929d40942c541ba5d95060e6129b4f2c729e7dbe11c05c"
     }
   ],
-  "grid_sha256": "82f07df381d883e651e41c5ec9f12ff4860803f70d34229f4b5511a7b91a5b18"
+  "grid_sha256": "ca59fa17cab979fbafc6d600be6fc59303dd61f86c62e5c87222e1ad65024a63"
 }

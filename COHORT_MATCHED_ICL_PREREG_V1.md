@@ -442,3 +442,56 @@ Each screen or confirmation manifest must bind and independently verify:
 Tampering, missing provenance, fallback output, hidden hard truncation,
 cross-instance state, unreported cost, or a post-outcome protocol change makes
 the affected block invalid. A valid unfavorable result remains valid.
+
+## Prospective infrastructure amendment A1 after invalid smoke attempt-001
+
+Date: 2026-07-14 America/Los_Angeles
+
+This amendment was frozen before any retry or formal online-ICL cell.
+
+Attempt-001, executed from source commit
+`bd9bb0a2030b5b29699320f12d98517b790ab27c`, completed GPU execution but
+produced no valid smoke gate. The fail-closed validator rejected exact
+adaptation-trace-to-snapshot reconstruction before any formal run. As required
+by validation, the automated process had already parsed and independently
+re-scored bound rewards and terminal actions, but it emitted no smoke gate,
+report, score, reward, action, or arm comparison. No operator viewed or
+interpreted any efficacy-bearing value from attempt-001.
+
+The failure was an outcome-independent verifier serialization mismatch. The
+runtime stored assistant messages with the trace-bound Pydantic response
+class's `model_dump_json()` serialization. The validator reconstructed the
+parsed action mapping with generic compact `json.dumps()`, which cannot recover
+Pydantic declaration order after the trace's sorted-key canonical JSON round
+trip.
+
+The sole authorized correction is to select the exact registered response
+class from `query.response_schema`, require the trace action to validate and
+round-trip without semantic normalization, and reconstruct the assistant
+message with `model_dump_json()`. Missing, unknown, invalid, extra, normalized,
+or type-coerced response records fail closed. The runner, runtime snapshot
+bytes, online-ICL algorithm, prompts, model and tokenizer, corpora, schedules,
+seeds, condition order, action budget, reward timing, scorer, estimands,
+thresholds, and analysis rules remain unchanged.
+
+Attempt-001 and its original provenance, seal, traces, snapshot, inventory,
+restoration audit, and manifest remain append-only invalid audit evidence. They
+may not be overwritten, reused, revalidated into a pass, or used as a formal
+prerequisite.
+
+Because no efficacy-bearing value was surfaced to or interpreted by an
+operator, and the correction is wholly outcome-independent, attempt-002 may
+reuse the already registered independent smoke corpora and smoke seed. It must
+run in a new immutable attempt directory from a new clean pushed source commit,
+freshly regenerated online-ICL grids, fresh no-overwrite provenance and
+protocol seal, and newly generated raw artifacts. Formal execution remains
+forbidden until attempt-002 passes exact blind smoke revalidation.
+
+The algorithm identifier remains `cohort_reward_aware_online_icl_v1` because
+this amendment changes only independent verification, not the algorithm or
+estimand. All statements that a seal predates an outcome are revision-scoped:
+the new execution contract says
+`created_before_first_outcome_under_current_protocol_seal`, and the old global
+`created_before_first_icl_outcome` field is retired. Revision identity is the
+new preregistration SHA-256, source commit, provenance SHA-256, grid digests,
+and protocol-seal SHA-256.

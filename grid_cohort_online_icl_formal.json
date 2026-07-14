@@ -4,7 +4,7 @@
   "base_causal_implementation_commit": "1caf142f6ce611da8da8691d4c336388a4c3c4b3",
   "preregistration": {
     "path": "COHORT_MATCHED_ICL_PREREG_V1.md",
-    "sha256": "e5cfb706d00b5897205afe3fdad457442515d0433509244b30d3184adf0b212e"
+    "sha256": "741f0b6753117c6dbc12e9def1d9f5823c5575d84694dcbfce77d31151dadf79"
   },
   "paired_causal_grid": {
     "path": "grid_cohort_causal_formal.json",
@@ -100,7 +100,7 @@
           "atomic_no_overwrite_required": true,
           "binds_both_smoke_and_formal_grid_digests": true,
           "binds_exact_runtime_provenance": true,
-          "created_before_first_icl_outcome": true,
+          "created_before_first_outcome_under_current_protocol_seal": true,
           "same_artifact_and_source_commit_for_smoke_and_formal": true
         },
         "online_adaptation": {
@@ -180,14 +180,14 @@
           ]
         }
       },
-      "execution_contract_sha256": "a335c4d03a71d0f919aa417e21cef55839bf44a2014180f5cef3c5c3154abaec",
+      "execution_contract_sha256": "5690cecd1e55f1c926f68b696882dbd851eef3c3c5a7cab2136683f5d7633ebb",
       "adaptation_trace_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071401_n20.adaptation.trace.json",
       "cell_manifest_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071401_n20.manifest.json",
       "context_inventory_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071401_n20.context_inventory.json",
       "heldout_trace_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071401_n20.heldout.trace.json",
       "restoration_audit_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071401_n20.restoration_audit.json",
       "snapshot_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071401_n20.sealed_snapshot.json",
-      "cell_config_sha256": "2c0163a48174c5a5bf36820394688fba66e6eb6db5808547f9c27dd7fc136ba4"
+      "cell_config_sha256": "7df5a20f6f129201472166b0d7bf79016bd0143c702c06f49a8f180c8603bd76"
     },
     {
       "cfg_id": "cohort_online_icl_formal_seed2026071402_n20",
@@ -259,7 +259,7 @@
           "atomic_no_overwrite_required": true,
           "binds_both_smoke_and_formal_grid_digests": true,
           "binds_exact_runtime_provenance": true,
-          "created_before_first_icl_outcome": true,
+          "created_before_first_outcome_under_current_protocol_seal": true,
           "same_artifact_and_source_commit_for_smoke_and_formal": true
         },
         "online_adaptation": {
@@ -339,14 +339,14 @@
           ]
         }
       },
-      "execution_contract_sha256": "a335c4d03a71d0f919aa417e21cef55839bf44a2014180f5cef3c5c3154abaec",
+      "execution_contract_sha256": "5690cecd1e55f1c926f68b696882dbd851eef3c3c5a7cab2136683f5d7633ebb",
       "adaptation_trace_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071402_n20.adaptation.trace.json",
       "cell_manifest_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071402_n20.manifest.json",
       "context_inventory_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071402_n20.context_inventory.json",
       "heldout_trace_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071402_n20.heldout.trace.json",
       "restoration_audit_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071402_n20.restoration_audit.json",
       "snapshot_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071402_n20.sealed_snapshot.json",
-      "cell_config_sha256": "9cea6ecc203dbee20093eccb2f35faeb96e35e31c62a1b3486d4aec9c62ed52b"
+      "cell_config_sha256": "2e6241ced8f303679533329c6eddbdafc14ae8403d70fd5b5e426ecb9a48476a"
     },
     {
       "cfg_id": "cohort_online_icl_formal_seed2026071403_n20",
@@ -418,7 +418,7 @@
           "atomic_no_overwrite_required": true,
           "binds_both_smoke_and_formal_grid_digests": true,
           "binds_exact_runtime_provenance": true,
-          "created_before_first_icl_outcome": true,
+          "created_before_first_outcome_under_current_protocol_seal": true,
           "same_artifact_and_source_commit_for_smoke_and_formal": true
         },
         "online_adaptation": {
@@ -498,15 +498,15 @@
           ]
         }
       },
-      "execution_contract_sha256": "a335c4d03a71d0f919aa417e21cef55839bf44a2014180f5cef3c5c3154abaec",
+      "execution_contract_sha256": "5690cecd1e55f1c926f68b696882dbd851eef3c3c5a7cab2136683f5d7633ebb",
       "adaptation_trace_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071403_n20.adaptation.trace.json",
       "cell_manifest_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071403_n20.manifest.json",
       "context_inventory_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071403_n20.context_inventory.json",
       "heldout_trace_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071403_n20.heldout.trace.json",
       "restoration_audit_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071403_n20.restoration_audit.json",
       "snapshot_path": "artifacts/cohort_online_icl/cohort_online_icl_formal_seed2026071403_n20.sealed_snapshot.json",
-      "cell_config_sha256": "84c0629767256bfb7adaf3902d0ddc63c20ed6d1ad833aac8a77222f987a82d4"
+      "cell_config_sha256": "eef84092a5aa25c0baeb1874b22e9e149a393fcf2b5680d088c7ee62d95a4f33"
     }
   ],
-  "grid_sha256": "8a07db10ae670817d15ac510d93f99aa77bc2f847b51a2e6e7f4e3c8bc46def4"
+  "grid_sha256": "3540a922c4e1939d557ee39d733fc9d91fd6e0ee5af92e6816af2b131c619fab"
 }

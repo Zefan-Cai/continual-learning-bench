@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import hashlib
 import json
 import math
@@ -453,18 +454,48 @@ def _expected_snapshot_system_contract(
     }
 
 
-def _assistant_record(action: Any) -> str:
+def _registered_cohort_response_schema(response_schema_name: Any) -> type[Any]:
+    """Resolve only the two response schemas registered by CohortStudyTask."""
+
+    from src.tasks.cohort_studies.tool_schemas import (
+        ToolCallResponse,
+        build_submission_schema,
+    )
+
+    schemas = (ToolCallResponse, build_submission_schema())
+    by_name = {schema.__name__: schema for schema in schemas}
+    if len(by_name) != len(schemas):
+        raise RuntimeError("registered Cohort response-schema names are ambiguous")
+    if not isinstance(response_schema_name, str) or response_schema_name not in by_name:
+        raise ValueError(
+            "adaptation trace carries an unregistered response schema: "
+            f"{response_schema_name!r}"
+        )
+    return by_name[response_schema_name]
+
+
+def _assistant_record(action: Any, *, response_schema_name: Any) -> str:
+    """Reproduce the exact Pydantic JSON appended by QwenLocalSystem.
+
+    Trace artifacts are canonical JSON and therefore sort object keys.  The
+    live system instead appends ``parsed_action.model_dump_json()`` to its
+    prompt-bearing state, which uses the registered Pydantic field order.  A
+    schema revalidation is required to recover those exact bytes.
+    """
+
     if not isinstance(action, dict):
         raise ValueError("adaptation trace action must be a structured object")
+    schema = _registered_cohort_response_schema(response_schema_name)
     try:
-        return json.dumps(
-            action,
-            allow_nan=False,
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
+        parsed_action = schema.model_validate(deepcopy(action))
+        if _canonical_bytes(parsed_action.model_dump()) != _canonical_bytes(action):
+            raise ValueError("recorded action changes under schema validation")
+        return parsed_action.model_dump_json()
     except (TypeError, ValueError) as exc:
-        raise ValueError("adaptation trace action is not JSON encodable") from exc
+        raise ValueError(
+            "adaptation trace action does not validate against its recorded "
+            f"response schema {response_schema_name!r}"
+        ) from exc
 
 
 def _reconstruct_adaptation_snapshot_state(
@@ -522,7 +553,10 @@ def _reconstruct_adaptation_snapshot_state(
         messages.append(
             {
                 "role": "assistant",
-                "content": _assistant_record(response.get("action")),
+                "content": _assistant_record(
+                    response.get("action"),
+                    response_schema_name=query.get("response_schema"),
+                ),
             }
         )
         content = observation.get("content")
