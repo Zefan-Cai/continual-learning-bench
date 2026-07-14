@@ -1,0 +1,46 @@
+{
+  "artifact_root": "/sensei-fs/users/zcai/TTT-RL/cohort-qonly-causal/1caf142f6ce611da8da8691d4c336388a4c3c4b3/attempts/attempt-002/artifacts/cohort_causal",
+  "attempt_id": "attempt-002",
+  "boot_id": "e854061a-f6e5-41ba-9786-a49427d93c60",
+  "checkout_root": "/mnt/localssd/ttt-rl-cohort-causal/1caf142f6ce611da8da8691d4c336388a4c3c4b3/attempt-002",
+  "collector_gpus": [
+    0,
+    2,
+    3
+  ],
+  "created_at_utc": "2026-07-14T11:09:26Z",
+  "durable_attempt_root": "/sensei-fs/users/zcai/TTT-RL/cohort-qonly-causal/1caf142f6ce611da8da8691d4c336388a4c3c4b3/attempts/attempt-002",
+  "eval_gpus": [
+    0,
+    2,
+    3,
+    4,
+    5,
+    6
+  ],
+  "expected_final_inventory": {
+    "cell_final_traces": 6,
+    "cell_manifests": 6,
+    "collector_final_traces": 3,
+    "collector_manifests": 3,
+    "formal_decisions": 1,
+    "formal_manifests": 1,
+    "tapes": 3,
+    "total": 23
+  },
+  "exit_file": "/sensei-fs/users/zcai/TTT-RL/cohort-qonly-causal/1caf142f6ce611da8da8691d4c336388a4c3c4b3/attempts/attempt-002/prep/causal_formal.exit",
+  "formal_grid_file_sha256": "c36eb230f5bb39b8ef93296eb772da481427a7f176a79581f8dfa7635055c98d",
+  "launch_mode": "formal",
+  "launcher_file_sha256": "9aaef89ac899042655e2d3a600e2cdc8680034424399bc014c420d336ed401dc",
+  "max_used_memory_mib": 1024,
+  "node_hostname": "pluto-prod-zcai-ttt-rl-causal-a40-1-0",
+  "pid_file": "/sensei-fs/users/zcai/TTT-RL/cohort-qonly-causal/1caf142f6ce611da8da8691d4c336388a4c3c4b3/attempts/attempt-002/prep/causal_formal.pid",
+  "pid_file_sha256_at_registration": "7861052c303cae899811d879aebb3bcdd2ef4ebd62ff102bd489fa3ef383345e",
+  "protocol": "cohort_causal_formal_launch_expectation_v1",
+  "provenance_file_sha256": "9638daac20829290a1a5ca4e582edc8d00a8f21df1067697f1d0cf02c40a83e6",
+  "schema_version": 1,
+  "source_commit": "1caf142f6ce611da8da8691d4c336388a4c3c4b3",
+  "wrapper_cmdline_sha256_at_registration": "bfd95a63297f86c92b7d964db61cd713a65d59cfb91eb6806516d0d4ee2e1558",
+  "wrapper_pid": 34747,
+  "wrapper_start_ticks": 4097445
+}
