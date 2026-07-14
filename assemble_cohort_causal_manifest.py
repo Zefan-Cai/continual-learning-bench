@@ -15,13 +15,16 @@ from run_cohort_causal import (
     _collector_manifest_path,
     _dataset_projection,
     _resolve,
+    _trace_paths,
     load_grid,
     load_provenance,
 )
 from validate_cohort_causal_results import (
+    EXPECTED_PREREGISTRATION_SHA256,
     EXPERIMENT,
     LIMITATION,
     MECHANISM_LABEL,
+    PREREGISTRATION_FILENAME,
     SCHEMA_VERSION,
     canonical_sha256,
     tape_item_sha256,
@@ -76,6 +79,27 @@ def _verify_tape(tape: dict[str, Any]) -> dict[str, Any]:
     return {"digest_verified": True, "items": verification_rows}
 
 
+def _bind_heldout_trace(
+    *, root: Path, cfg: dict[str, Any], cell: dict[str, Any]
+) -> dict[str, Any]:
+    """Read the registered trace sidecar, verify its digest, and embed it."""
+
+    expected_trace_path, _ = _trace_paths(root, cfg)
+    recorded_path = cell.get("trace_path")
+    if not isinstance(recorded_path, str) or not recorded_path:
+        raise ValueError(f"{cfg['cfg_id']} cell has no trace_path")
+    resolved_recorded_path = _resolve(root, recorded_path)
+    if resolved_recorded_path.resolve() != expected_trace_path.resolve():
+        raise ValueError(f"{cfg['cfg_id']} cell trace_path is not registered")
+    trace = _load_json(expected_trace_path)
+    trace_digest = canonical_sha256(trace)
+    if cell.get("trace_sha256") != trace_digest:
+        raise ValueError(f"{cfg['cfg_id']} trace SHA-256 mismatch during assembly")
+    bound = dict(cell)
+    bound["heldout_trace"] = trace
+    return bound
+
+
 def assemble_manifest(
     *,
     root: Path,
@@ -122,8 +146,16 @@ def assemble_manifest(
 
         active_cfg = cells[(run_seed, "active")]
         lr0_cfg = cells[(run_seed, "lr0")]
-        active = _load_json(_resolve(root, active_cfg["cell_manifest_path"]))
-        lr0 = _load_json(_resolve(root, lr0_cfg["cell_manifest_path"]))
+        active = _bind_heldout_trace(
+            root=root,
+            cfg=active_cfg,
+            cell=_load_json(_resolve(root, active_cfg["cell_manifest_path"])),
+        )
+        lr0 = _bind_heldout_trace(
+            root=root,
+            cfg=lr0_cfg,
+            cell=_load_json(_resolve(root, lr0_cfg["cell_manifest_path"])),
+        )
         for arm, cell in (("active", active), ("lr0", lr0)):
             if cell.get("status") != "completed" or cell.get("arm") != arm:
                 raise ValueError(f"incomplete {arm} cell for seed {run_seed}")
@@ -144,14 +176,20 @@ def assemble_manifest(
             }
         )
 
-    preregistration_bytes = preregistration_path.read_bytes()
+    registered_preregistration = root / PREREGISTRATION_FILENAME
+    if preregistration_path.resolve() != registered_preregistration.resolve():
+        raise ValueError("preregistration path is not the checked-in repository file")
+    preregistration_bytes = registered_preregistration.read_bytes()
+    preregistration_sha256 = hashlib.sha256(preregistration_bytes).hexdigest()
+    if preregistration_sha256 != EXPECTED_PREREGISTRATION_SHA256:
+        raise ValueError("checked-in preregistration bytes differ from validator binding")
     return {
         "schema_version": SCHEMA_VERSION,
         "experiment": EXPERIMENT,
         "protocol": grid["protocol"],
         "mechanism_label": MECHANISM_LABEL,
         "limitation": LIMITATION,
-        "preregistration_sha256": hashlib.sha256(preregistration_bytes).hexdigest(),
+        "preregistration_sha256": preregistration_sha256,
         "provenance": provenance,
         "corpora": {
             "adaptation": _dataset_projection(root, grid, "adaptation"),

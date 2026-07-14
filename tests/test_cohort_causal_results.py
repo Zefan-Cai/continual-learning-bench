@@ -2,18 +2,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import statistics
 import subprocess
 import sys
 from copy import deepcopy
 from pathlib import Path
 
+import validate_cohort_causal_results as validator
 from validate_cohort_causal_results import (
     BOOTSTRAP_REPLICATES,
     BOOTSTRAP_SEED,
     EXPECTED_ADAPTER_INIT_SEED,
     EXPECTED_CORPORA,
     EXPECTED_OPERATIONS,
+    EXPECTED_PREREGISTRATION_SHA256,
     EXPECTED_RUN_SEEDS,
     EXPECTED_SAMPLING_RNG_BINDING,
     EXPECTED_SYSTEM_CONFIG,
@@ -23,6 +26,9 @@ from validate_cohort_causal_results import (
     MECHANISM_LABEL,
     PREREGISTERED_PARENT_COMMIT,
     PROTOCOL,
+    _TERMINAL_RESPONSE_METADATA_KEYS,
+    _load_checked_in_heldout_scoring_contract,
+    _rescore_terminal_action,
     canonical_sha256,
     corpus_projection_from_dataset_manifest,
     evaluate,
@@ -34,10 +40,38 @@ from validate_cohort_causal_results import (
 
 ROOT = Path(__file__).resolve().parents[1]
 VALIDATOR = ROOT / "validate_cohort_causal_results.py"
+_ACTION_CACHE: dict[tuple[str, float], tuple[dict[str, float], float]] = {}
+_TERMINAL_PROMPT = (
+    "Provide your survival estimates for all 36 cohorts. "
+    "Each field is named {cohort_id}__s12, {cohort_id}__s24, "
+    "{cohort_id}__s36 and takes a float between 0 and 1 "
+    "representing P(survival) at that time horizon. "
+    "Use all knowledge accumulated from the studies you have seen."
+)
 
 
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _copy_checked_in_corpus(tmp_path: Path, role: str) -> Path:
+    directory = (
+        "causal_adapt_2026071411"
+        if role == "adaptation"
+        else "causal_eval_2026071412"
+    )
+    source = ROOT / "data/cohort_studies" / directory
+    destination = tmp_path / "data/cohort_studies" / directory
+    shutil.copytree(source, destination)
+    schedule_source = (
+        ROOT / "src/tasks/cohort_studies/schedules" / f"{directory}.json"
+    )
+    schedule_destination = (
+        tmp_path / "src/tasks/cohort_studies/schedules" / f"{directory}.json"
+    )
+    schedule_destination.parent.mkdir(parents=True)
+    shutil.copy2(schedule_source, schedule_destination)
+    return destination
 
 
 def _integrity(*, parse_retries: int = 0, repairs: int = 0) -> dict:
@@ -54,27 +88,114 @@ def _integrity(*, parse_retries: int = 0, repairs: int = 0) -> dict:
 
 
 def _corpus(name: str) -> dict:
-    is_adaptation = name == "adaptation"
-    prefix = "adapt" if is_adaptation else "eval"
-    expected = EXPECTED_CORPORA[name]
-    corpus = {
-        "aggregate_sha256": expected["aggregate_sha256"],
-        "canonical_instance_ids": [
-            f"cohort_studies:{expected['schedule_id']}:{prefix}-instance-{index:02d}"
-            for index in range(20)
-        ],
-        "database_sha256": {"cohort.sqlite": _digest(f"{prefix}-database")},
-        "dataset_manifest_sha256": _digest(f"{prefix}-manifest"),
-        "dgp_seed": expected["dgp_seed"],
-        "ground_truth_sha256": {"ground_truth.json": _digest(f"{prefix}-gt")},
-        "schedule_id": expected["schedule_id"],
-        "schedule_sha256": expected["schedule_sha256"],
-        "used_for_evaluation": not is_adaptation,
-        "used_for_updates": is_adaptation,
+    directory = (
+        "causal_adapt_2026071411"
+        if name == "adaptation"
+        else "causal_eval_2026071412"
+    )
+    manifest_path = ROOT / "data/cohort_studies" / directory / "manifest.json"
+    raw = manifest_path.read_bytes()
+    return corpus_projection_from_dataset_manifest(
+        json.loads(raw),
+        dataset_manifest_sha256=hashlib.sha256(raw).hexdigest(),
+        role=name,
+    )
+
+
+def _scoring_contract(heldout: dict) -> dict:
+    errors: list[str] = []
+    contract = _load_checked_in_heldout_scoring_contract(
+        heldout_corpus=heldout,
+        heldout_ids=heldout["canonical_instance_ids"],
+        errors=errors,
+    )
+    assert contract is not None
+    assert errors == []
+    return contract
+
+
+def _reference_action(contract: dict, instance_id: str) -> dict[str, float]:
+    variant = instance_id.rsplit(":", 1)[-1]
+    reference = contract["references"][variant]
+    return {
+        f"{cohort_id}__s{horizon}": float(reference[f"survival_{horizon}m"])
+        for cohort_id in contract["ground_truth"]
+        for horizon in (12, 24, 36)
     }
-    if not is_adaptation:
-        corpus["never_updated"] = True
-    return corpus
+
+
+def _score_action(contract: dict, instance_id: str, action: dict) -> float:
+    errors: list[str] = []
+    score = _rescore_terminal_action(
+        action,
+        instance_id=instance_id,
+        scoring_contract=contract,
+        label="test",
+        errors=errors,
+    )
+    assert score is not None
+    assert errors == []
+    return score
+
+
+def _action_for_target_reward(
+    contract: dict, instance_id: str, target: float
+) -> tuple[dict[str, float], float]:
+    """Find a scorer-authentic report whose rounded reward equals target."""
+
+    target = round(float(target), 6)
+    cache_key = (instance_id, target)
+    if cache_key in _ACTION_CACHE:
+        action, score = _ACTION_CACHE[cache_key]
+        return deepcopy(action), score
+    reference_action = _reference_action(contract, instance_id)
+    if target == 0.0:
+        _ACTION_CACHE[cache_key] = (deepcopy(reference_action), 0.0)
+        return reference_action, 0.0
+    if target > 0.0:
+        endpoint = {
+            f"{cohort_id}__s{horizon}": float(
+                truth[f"survival_{horizon}m"]
+            )
+            for cohort_id, truth in contract["ground_truth"].items()
+            for horizon in (12, 24, 36)
+        }
+    else:
+        endpoint = {field: 1.0 for field in reference_action}
+    endpoint_score = _score_action(contract, instance_id, endpoint)
+    assert (target > 0.0 and endpoint_score >= target) or (
+        target < 0.0 and endpoint_score <= target
+    )
+
+    lower = 0.0
+    upper = 1.0
+    best_action = reference_action
+    best_score = 0.0
+    for _ in range(64):
+        weight = (lower + upper) / 2.0
+        candidate = {
+            field: reference_action[field]
+            + weight * (endpoint[field] - reference_action[field])
+            for field in reference_action
+        }
+        score = _score_action(contract, instance_id, candidate)
+        if abs(score - target) < abs(best_score - target):
+            best_action, best_score = candidate, score
+        if score == target:
+            _ACTION_CACHE[cache_key] = (deepcopy(candidate), score)
+            return candidate, score
+        if target > 0.0:
+            if score < target:
+                lower = weight
+            else:
+                upper = weight
+        elif score > target:
+            lower = weight
+        else:
+            upper = weight
+    assert best_score == target
+    _ACTION_CACHE[cache_key] = (deepcopy(best_action), best_score)
+    return best_action, best_score
 
 
 def _tape(
@@ -267,6 +388,7 @@ def _replay(tape: dict, *, arm: str, run_seed: int, initial_hash: str) -> dict:
 def _cell(
     *,
     arm: str,
+    pair_id: str,
     run_seed: int,
     delta: float,
     tape: dict,
@@ -274,23 +396,165 @@ def _cell(
     adaptation: dict,
     heldout: dict,
     initial_hash: str,
+    scoring_contract: dict,
 ) -> dict:
     config = deepcopy(EXPECTED_SYSTEM_CONFIG)
     config["grpo_run_seed"] = run_seed
     if arm == "lr0":
         config["ttt_lr"] = 0.0
         config["reward_pg_lr"] = 0.0
-    baseline = 0.1
-    reward = baseline + delta if arm == "active" else baseline
-    outcomes = [
-        {
-            "instance_id": instance_id,
-            "instance_index": index,
-            "integrity": _integrity(),
-            "reward": reward,
+    target_reward = delta if arm == "active" else 0.0
+    outcomes = []
+    trace_outcomes = []
+    interactions = []
+    for index, instance_id in enumerate(heldout["canonical_instance_ids"]):
+        action, reward = _action_for_target_reward(
+            scoring_contract, instance_id, target_reward
+        )
+        integrity = _integrity()
+        outcomes.append(
+            {
+                "instance_id": instance_id,
+                "instance_index": index,
+                "integrity": integrity,
+                "reward": reward,
+            }
+        )
+        trace_outcomes.append(
+            {
+                "cost_usd": 0.0,
+                "instance_id": instance_id,
+                "instance_index": index,
+                "latency_seconds": 0.0,
+                "metadata": {},
+                "raw_metric_higher_is_better": True,
+                "raw_metric_name": "kl_information_gain_bits",
+                "raw_metric_value": reward,
+                "reward": reward,
+                "success": reward > 0.0,
+            }
+        )
+        for local_step in range(20):
+            interaction_index = index * 21 + local_step
+            interactions.append(
+                {
+                    "done": False,
+                    "observation": {"instance_complete": False},
+                    "query": {
+                        "instance_id": instance_id,
+                        "instance_index": index,
+                    },
+                    "response": {},
+                    "step_number": interaction_index + 1,
+                    "timestamp": "2026-07-14T00:00:00",
+                    "timing": {},
+                    "usage": {},
+                }
+            )
+        response_metadata = {
+            key: None for key in _TERMINAL_RESPONSE_METADATA_KEYS
         }
-        for index, instance_id in enumerate(heldout["canonical_instance_ids"])
-    ]
+        response_metadata.update(
+            {
+                "parse_repair_used": False,
+                "parse_retries_used": 0,
+            }
+        )
+        variant = instance_id.rsplit(":", 1)[-1]
+        reference = scoring_contract["references"][variant]
+        interactions.append(
+            {
+                "done": index == len(heldout["canonical_instance_ids"]) - 1,
+                "observation": {
+                    "content": "Report submitted.",
+                    "instance_complete": True,
+                    "metadata": {
+                        "cohort_gt": deepcopy(scoring_contract["cohort_gt"]),
+                        "env_feedback_instance_id": instance_id,
+                        "env_feedback_instance_index": index,
+                        "env_feedback_raw_metric_higher_is_better": True,
+                        "env_feedback_raw_metric_name": "kl_information_gain_bits",
+                        "env_feedback_raw_metric_value": reward,
+                        "env_feedback_reward": reward,
+                        "env_feedback_success": reward > 0.0,
+                        "ref_survival": [
+                            reference[f"survival_{horizon}m"]
+                            for horizon in (12, 24, 36)
+                        ],
+                    },
+                },
+                "query": {
+                    "feedback": None,
+                    "instance_id": instance_id,
+                    "instance_index": index,
+                    "metadata": {
+                        "instance_idx": index,
+                        "schedule_id": EXPECTED_TASK_CONFIG["schedule"],
+                        "step": "submission_extraction",
+                        "study_name": variant.split("_", 1)[0].upper(),
+                    },
+                    "prompt": _TERMINAL_PROMPT,
+                    "response_schema": "CohortSubmission",
+                },
+                "response": {
+                    "action": action,
+                    "action_type": "structured",
+                    "metadata": response_metadata,
+                },
+                "step_number": (index + 1) * 21,
+                "timestamp": "2026-07-14T00:00:00",
+                "timing": {},
+                "usage": {},
+            }
+        )
+    trace_score = statistics.mean(row["reward"] for row in trace_outcomes)
+    trace_task_params = {
+        key: EXPECTED_TASK_CONFIG[key]
+        for key in (
+            "action_budget",
+            "dataset_path",
+            "num_instances",
+            "repeat_instructions",
+            "schedule",
+            "seed",
+        )
+    }
+    heldout_trace = {
+        "artifacts": {},
+        "execution": {
+            "avg_response_seconds": 0.0,
+            "end_time": "2026-07-14T00:00:00",
+            "max_response_seconds": 0.0,
+            "run_group_id": pair_id,
+            "run_index": 0,
+            "start_time": "2026-07-14T00:00:00",
+            "total_interactions": len(interactions),
+            "total_response_seconds": 0.0,
+            "usage": {},
+            "wall_duration_seconds": 0.0,
+        },
+        "instance_outcomes": trace_outcomes,
+        "interactions": interactions,
+        "phase": "baseline",
+        "result": {
+            "eval_metrics": {},
+            "instance_outcomes": deepcopy(trace_outcomes),
+            "metrics": {},
+            "score": trace_score,
+            "summary": "synthetic exact-schema trace",
+        },
+        "schedule": EXPECTED_TASK_CONFIG["schedule"],
+        "status": "completed",
+        "system": {
+            "continuity": {},
+            "name": "qwen_local",
+            "params": deepcopy(config),
+        },
+        "system_artifacts": None,
+        "system_memory": None,
+        "task": {"name": "cohort_studies", "params": trace_task_params},
+        "task_brief": None,
+    }
     return {
         "adaptation_corpus_sha256": adaptation["aggregate_sha256"],
         "arm": arm,
@@ -299,6 +563,7 @@ def _cell(
         ),
         "heldout_corpus_sha256": heldout["aggregate_sha256"],
         "heldout_outcomes": outcomes,
+        "heldout_trace": heldout_trace,
         "heldout_updates_frozen": True,
         "integrity_counters": {
             "fallbacks": 0,
@@ -323,12 +588,15 @@ def _cell(
         "tape_sha256": tape["tape_sha256"],
         "task_config": deepcopy(EXPECTED_TASK_CONFIG),
         "task_config_sha256": canonical_sha256(EXPECTED_TASK_CONFIG),
+        "trace_path": f"artifacts/traces/{arm}-{run_seed}.json",
+        "trace_sha256": canonical_sha256(heldout_trace),
     }
 
 
 def _manifest(deltas: tuple[float, float, float] = (0.04, 0.05, 0.03)) -> dict:
     adaptation = _corpus("adaptation")
     heldout = _corpus("heldout")
+    scoring_contract = _scoring_contract(heldout)
     provenance = {
         "adapter_init_seed": EXPECTED_ADAPTER_INIT_SEED,
         "environment_lock_sha256": _digest("environment-lock"),
@@ -342,6 +610,7 @@ def _manifest(deltas: tuple[float, float, float] = (0.04, 0.05, 0.03)) -> dict:
     initial_hash = _digest("shared-adapter-initialization")
     pairs = []
     for run_seed, delta in zip(EXPECTED_RUN_SEEDS, deltas, strict=True):
+        pair_id = f"cohort-qonly-causal-{run_seed}"
         tape, verification = _tape(
             run_seed, adaptation["canonical_instance_ids"], initial_hash
         )
@@ -349,6 +618,7 @@ def _manifest(deltas: tuple[float, float, float] = (0.04, 0.05, 0.03)) -> dict:
             {
                 "active": _cell(
                     arm="active",
+                    pair_id=pair_id,
                     run_seed=run_seed,
                     delta=delta,
                     tape=tape,
@@ -356,9 +626,11 @@ def _manifest(deltas: tuple[float, float, float] = (0.04, 0.05, 0.03)) -> dict:
                     adaptation=adaptation,
                     heldout=heldout,
                     initial_hash=initial_hash,
+                    scoring_contract=scoring_contract,
                 ),
                 "lr0": _cell(
                     arm="lr0",
+                    pair_id=pair_id,
                     run_seed=run_seed,
                     delta=delta,
                     tape=tape,
@@ -366,8 +638,9 @@ def _manifest(deltas: tuple[float, float, float] = (0.04, 0.05, 0.03)) -> dict:
                     adaptation=adaptation,
                     heldout=heldout,
                     initial_hash=initial_hash,
+                    scoring_contract=scoring_contract,
                 ),
-                "pair_id": f"cohort-qonly-causal-{run_seed}",
+                "pair_id": pair_id,
                 "run_seed": run_seed,
                 "tape": tape,
                 "tape_verification": verification,
@@ -379,7 +652,7 @@ def _manifest(deltas: tuple[float, float, float] = (0.04, 0.05, 0.03)) -> dict:
         "limitation": LIMITATION,
         "mechanism_label": MECHANISM_LABEL,
         "pairs": pairs,
-        "preregistration_sha256": _digest("preregistration"),
+        "preregistration_sha256": EXPECTED_PREREGISTRATION_SHA256,
         "protocol": PROTOCOL,
         "provenance": provenance,
         "schema_version": 1,
@@ -397,6 +670,79 @@ def test_passes_only_complete_positive_preregistered_gate() -> None:
     assert report["aggregate"]["ci_95_lower"] == 0.03
     assert report["aggregate"]["ci_95_upper"] == 0.05
     assert all(report["threshold_checks"].values())
+
+
+def test_early_submission_segments_are_accepted() -> None:
+    manifest = _manifest()
+    for pair in manifest["pairs"]:
+        for arm in ("active", "lr0"):
+            cell = pair[arm]
+            trace = cell["heldout_trace"]
+            shortened = []
+            for instance_index in range(len(trace["instance_outcomes"])):
+                segment = trace["interactions"][
+                    instance_index * 21 : (instance_index + 1) * 21
+                ]
+                shortened.extend(segment[:1] + segment[-1:])
+            for step_number, interaction in enumerate(shortened, start=1):
+                interaction["step_number"] = step_number
+            trace["interactions"] = shortened
+            trace["execution"]["total_interactions"] = len(shortened)
+            cell["trace_sha256"] = canonical_sha256(trace)
+
+    report = evaluate(manifest)
+
+    assert report["decision"] == "pass"
+    assert report["errors"] == []
+
+
+def test_single_interaction_terminal_segment_fails_closed() -> None:
+    manifest = _manifest()
+    cell = manifest["pairs"][0]["active"]
+    trace = cell["heldout_trace"]
+    trace["interactions"] = trace["interactions"][20:21] + trace[
+        "interactions"
+    ][21:]
+    for step_number, interaction in enumerate(trace["interactions"], start=1):
+        interaction["step_number"] = step_number
+    trace["execution"]["total_interactions"] = len(trace["interactions"])
+    cell["trace_sha256"] = canonical_sha256(trace)
+
+    report = evaluate(manifest)
+
+    assert report["decision"] == "invalid"
+    assert any("invalid instance segment length" in error for error in report["errors"])
+
+
+def test_paired_terminal_signature_mismatch_fails_closed() -> None:
+    manifest = _manifest()
+    cell = manifest["pairs"][0]["active"]
+    trace = cell["heldout_trace"]
+    trace["interactions"][20]["query"]["metadata"]["study_name"] = "FORGED"
+    cell["trace_sha256"] = canonical_sha256(trace)
+
+    report = evaluate(manifest)
+
+    assert report["decision"] == "invalid"
+    assert any(
+        "paired terminal prompt/schema/study signatures differ" in error
+        for error in report["errors"]
+    )
+
+
+def test_formal_heldout_corpus_must_close_to_checked_in_manifest() -> None:
+    manifest = _manifest()
+    manifest["corpora"]["heldout"]["dataset_manifest_sha256"] = _digest(
+        "wrong-heldout-manifest"
+    )
+
+    report = evaluate(manifest)
+
+    assert report["decision"] == "invalid"
+    assert any(
+        "checked-in heldout manifest.json SHA-256 mismatch" in error
+        for error in report["errors"]
+    )
 
 
 def test_checked_in_dataset_manifests_project_unambiguously() -> None:
@@ -427,6 +773,47 @@ def test_checked_in_dataset_manifests_project_unambiguously() -> None:
         assert projection["never_updated"] is True if role == "heldout" else (
             "never_updated" not in projection
         )
+
+
+def test_checked_in_adaptation_manifest_byte_drift_fails_closed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    formal_corpus = _corpus("adaptation")
+    dataset_dir = _copy_checked_in_corpus(tmp_path, "adaptation")
+    manifest_path = dataset_dir / "manifest.json"
+    manifest_path.write_bytes(manifest_path.read_bytes() + b"\n")
+    monkeypatch.setattr(validator, "ROOT", tmp_path)
+    errors: list[str] = []
+
+    verified = validator._load_and_verify_checked_in_corpus(
+        role="adaptation",
+        formal_corpus=formal_corpus,
+        errors=errors,
+    )
+
+    assert verified is None
+    assert any("registered SHA-256 mismatch" in error for error in errors)
+
+
+def test_checked_in_heldout_artifact_byte_drift_fails_closed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    formal_corpus = _corpus("heldout")
+    dataset_dir = _copy_checked_in_corpus(tmp_path, "heldout")
+    metadata_path = dataset_dir / "metadata.json"
+    metadata_path.write_bytes(metadata_path.read_bytes() + b"\n")
+    monkeypatch.setattr(validator, "ROOT", tmp_path)
+    errors: list[str] = []
+
+    verified = validator._load_and_verify_checked_in_corpus(
+        role="heldout",
+        formal_corpus=formal_corpus,
+        errors=errors,
+    )
+
+    assert verified is None
+    assert any("artifact size_bytes mismatch" in error for error in errors)
+    assert any("artifact raw SHA-256 mismatch" in error for error in errors)
 
 
 def test_valid_no_go_is_distinct_from_invalid() -> None:
@@ -475,6 +862,227 @@ def test_tampered_tape_item_fails_closed() -> None:
     assert any(
         "tape SHA-256 verification failed" in error for error in report["errors"]
     )
+
+
+def test_reward_and_score_only_tampering_cannot_escape_bound_trace() -> None:
+    manifest = _manifest()
+    cell = manifest["pairs"][0]["active"]
+    cell["heldout_outcomes"][0]["reward"] += 0.5
+    cell["score"] = statistics.mean(
+        row["reward"] for row in cell["heldout_outcomes"]
+    )
+
+    report = evaluate(manifest)
+
+    assert report["decision"] == "invalid"
+    assert any(
+        "outcome/reward/integrity differs from bound trace" in error
+        for error in report["errors"]
+    )
+
+
+def test_coordinated_outcome_trace_and_hash_laundering_cannot_forge_reward() -> None:
+    manifest = _manifest((0.0, 0.0, 0.0))
+    for pair in manifest["pairs"]:
+        cell = pair["active"]
+        forged_reward = 0.1
+        for row in cell["heldout_outcomes"]:
+            row["reward"] = forged_reward
+        cell["score"] = forged_reward
+        trace = cell["heldout_trace"]
+        for row in trace["instance_outcomes"]:
+            row["reward"] = forged_reward
+            row["raw_metric_value"] = forged_reward
+            row["success"] = True
+        trace["result"]["instance_outcomes"] = deepcopy(
+            trace["instance_outcomes"]
+        )
+        trace["result"]["score"] = forged_reward
+        cell["trace_sha256"] = canonical_sha256(trace)
+
+    report = evaluate(manifest)
+
+    assert report["decision"] == "invalid"
+    assert any(
+        "reward differs from independent score" in error
+        for error in report["errors"]
+    )
+
+
+def test_terminal_env_feedback_identity_and_reward_are_bound() -> None:
+    manifest = _manifest()
+    cell = manifest["pairs"][0]["active"]
+    terminal = cell["heldout_trace"]["interactions"][20]
+    terminal["observation"]["metadata"]["env_feedback_instance_id"] = (
+        "cohort_studies:causal_eval_2026071412:forged"
+    )
+    terminal["observation"]["metadata"]["env_feedback_reward"] = 0.9
+    cell["trace_sha256"] = canonical_sha256(cell["heldout_trace"])
+
+    report = evaluate(manifest)
+
+    assert report["decision"] == "invalid"
+    assert any("terminal identity chain mismatch" in error for error in report["errors"])
+    assert any(
+        "env_feedback_reward differs from independent score" in error
+        for error in report["errors"]
+    )
+
+
+def test_wrong_trace_task_system_and_unknown_payload_fail_closed() -> None:
+    mutations = (
+        lambda trace: trace["task"].update(name="not_cohort_studies"),
+        lambda trace: trace["system"].update(name="not_qwen_local"),
+        lambda trace: trace.update(unknown_payload="x" * 1_000_000),
+    )
+    expected_errors = (
+        "trace task name mismatch",
+        "trace system name mismatch",
+        "heldout_trace: schema mismatch",
+    )
+    for mutate, expected_error in zip(mutations, expected_errors, strict=True):
+        manifest = _manifest()
+        cell = manifest["pairs"][0]["active"]
+        mutate(cell["heldout_trace"])
+        cell["trace_sha256"] = canonical_sha256(cell["heldout_trace"])
+
+        report = evaluate(manifest)
+
+        assert report["decision"] == "invalid"
+        assert any(expected_error in error for error in report["errors"])
+
+
+def test_terminal_action_schema_is_exact_and_independently_scored() -> None:
+    manifest = _manifest()
+    cell = manifest["pairs"][0]["active"]
+    action = cell["heldout_trace"]["interactions"][20]["response"]["action"]
+    action["unregistered_survival"] = 0.5
+    cell["trace_sha256"] = canonical_sha256(cell["heldout_trace"])
+
+    report = evaluate(manifest)
+
+    assert report["decision"] == "invalid"
+    assert any("/action: schema mismatch" in error for error in report["errors"])
+
+
+def test_embedded_trace_only_tampering_fails_digest_verification() -> None:
+    manifest = _manifest()
+    trace = manifest["pairs"][0]["active"]["heldout_trace"]
+    trace["instance_outcomes"][0]["reward"] += 0.5
+
+    report = evaluate(manifest)
+
+    assert report["decision"] == "invalid"
+    assert any(
+        "embedded held-out trace SHA-256 mismatch" in error
+        for error in report["errors"]
+    )
+
+
+def test_trace_hash_only_tampering_fails_closed() -> None:
+    manifest = _manifest()
+    manifest["pairs"][1]["lr0"]["trace_sha256"] = _digest("wrong-trace")
+
+    report = evaluate(manifest)
+
+    assert report["decision"] == "invalid"
+    assert any(
+        "embedded held-out trace SHA-256 mismatch" in error
+        for error in report["errors"]
+    )
+
+
+def test_rehashed_reordered_embedded_trace_fails_canonical_order() -> None:
+    manifest = _manifest()
+    cell = manifest["pairs"][1]["active"]
+    trace = cell["heldout_trace"]
+    trace["instance_outcomes"][4], trace["instance_outcomes"][5] = (
+        trace["instance_outcomes"][5],
+        trace["instance_outcomes"][4],
+    )
+    trace["result"]["instance_outcomes"] = deepcopy(trace["instance_outcomes"])
+    cell["trace_sha256"] = canonical_sha256(trace)
+
+    report = evaluate(manifest)
+
+    assert report["decision"] == "invalid"
+    assert any(
+        "held-out instance ID/order mismatch" in error
+        for error in report["errors"]
+    )
+
+
+def test_rehashed_missing_embedded_trace_outcome_fails_closed() -> None:
+    manifest = _manifest()
+    cell = manifest["pairs"][2]["lr0"]
+    trace = cell["heldout_trace"]
+    trace["instance_outcomes"].pop()
+    trace["result"]["instance_outcomes"] = deepcopy(trace["instance_outcomes"])
+    trace["result"]["score"] = statistics.mean(
+        row["reward"] for row in trace["instance_outcomes"]
+    )
+    cell["trace_sha256"] = canonical_sha256(trace)
+
+    report = evaluate(manifest)
+
+    assert report["decision"] == "invalid"
+    assert any(
+        "trace instance_outcomes must contain exactly 20" in error
+        for error in report["errors"]
+    )
+
+
+def test_valid_but_wrong_preregistration_hash_fails_closed() -> None:
+    manifest = _manifest()
+    manifest["preregistration_sha256"] = _digest("different-preregistration")
+
+    report = evaluate(manifest)
+
+    assert report["decision"] == "invalid"
+    assert any(
+        "differs from checked-in preregistration" in error
+        for error in report["errors"]
+    )
+
+
+def test_changed_checked_in_preregistration_bytes_fail_closed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manifest = _manifest()
+    preregistration = tmp_path / validator.PREREGISTRATION_FILENAME
+    preregistration.write_bytes(
+        (ROOT / validator.PREREGISTRATION_FILENAME).read_bytes() + b"\n"
+    )
+    monkeypatch.setattr(validator, "ROOT", tmp_path)
+
+    report = evaluate(manifest)
+
+    assert report["decision"] == "invalid"
+    assert any(
+        "checked-in preregistration file SHA-256 drift" in error
+        for error in report["errors"]
+    )
+
+
+def test_unknown_keys_fail_exact_schema_at_all_formal_evidence_levels() -> None:
+    mutations = (
+        lambda manifest: manifest.update(unregistered_top_level=True),
+        lambda manifest: manifest["pairs"][0]["active"].update(
+            unregistered_cell_field=True
+        ),
+        lambda manifest: manifest["pairs"][0]["active"]["replay"].update(
+            unregistered_replay_field=True
+        ),
+        lambda manifest: manifest["pairs"][0]["active"]["heldout_outcomes"][
+            0
+        ].update(unregistered_outcome_field=True),
+    )
+    for mutate in mutations:
+        manifest = _manifest()
+        mutate(manifest)
+        report = evaluate(manifest)
+        assert report["decision"] == "invalid"
+        assert any("schema mismatch" in error for error in report["errors"])
 
 
 def test_tampered_sampling_provenance_fails_closed() -> None:

@@ -30,6 +30,11 @@ PROTOCOL = "cohort_qonly_frozen_tape_weight_update_ablation_v1"
 MECHANISM_LABEL = "frozen-tape weight-update ablation"
 LIMITATION = "not exact historical replication"
 PREREGISTERED_PARENT_COMMIT = "2d79ec6cd6ce4520ed36e2f68e0afd49fe73d350"
+ROOT = Path(__file__).resolve().parent
+PREREGISTRATION_FILENAME = "COHORT_QONLY_CAUSAL_PREREG.md"
+EXPECTED_PREREGISTRATION_SHA256 = (
+    "f9bb24bee51eabf155f5fac74a215304053f5156dd567ed9c19aa027aa88c94b"
+)
 
 EXPECTED_RUN_SEEDS = (2026071401, 2026071402, 2026071403)
 EXPECTED_ADAPTER_INIT_SEED = 2026071400
@@ -132,6 +137,21 @@ EXPECTED_CORPORA = {
     },
 }
 
+_CHECKED_IN_DATASETS = {
+    "adaptation": {
+        "directory": "causal_adapt_2026071411",
+        "manifest_sha256": (
+            "16e5cd0f020c6a7e28d4f97b7cee2c5df683e56f133de4f5f9b46c3928890c5f"
+        ),
+    },
+    "heldout": {
+        "directory": "causal_eval_2026071412",
+        "manifest_sha256": (
+            "76259361e5d80da024f93803ce1e59e7c66be5f529aacb94e3125db9fc26e83d"
+        ),
+    },
+}
+
 _ZERO_INTEGRITY_FIELDS = (
     "synthetic",
     "timed_out",
@@ -146,6 +166,263 @@ _COUNTER_ZERO_FIELDS = (
     "missing_outcomes",
     "hard_schema_failures",
 )
+
+_MANIFEST_KEYS = {
+    "schema_version",
+    "experiment",
+    "protocol",
+    "mechanism_label",
+    "limitation",
+    "preregistration_sha256",
+    "provenance",
+    "corpora",
+    "pairs",
+}
+_PROVENANCE_KEYS = {
+    "source_commit",
+    "preregistered_parent_commit",
+    "environment_lock_sha256",
+    "model_sha256",
+    "tokenizer_sha256",
+    "evaluation_code_sha256",
+    "model_path",
+    "adapter_init_seed",
+}
+_CORPORA_KEYS = {"adaptation", "heldout"}
+_ADAPTATION_CORPUS_KEYS = {
+    "aggregate_sha256",
+    "canonical_instance_ids",
+    "database_sha256",
+    "dataset_manifest_sha256",
+    "dgp_seed",
+    "ground_truth_sha256",
+    "schedule_id",
+    "schedule_sha256",
+    "used_for_evaluation",
+    "used_for_updates",
+}
+_HELDOUT_CORPUS_KEYS = _ADAPTATION_CORPUS_KEYS | {"never_updated"}
+_PAIR_KEYS = {
+    "pair_id",
+    "run_seed",
+    "tape",
+    "tape_verification",
+    "active",
+    "lr0",
+}
+_TAPE_VERIFICATION_KEYS = {"digest_verified", "items"}
+_TAPE_VERIFICATION_ITEM_KEYS = {
+    "digest_verified",
+    "item_sha256",
+    "sequence_index",
+}
+_CELL_KEYS = {
+    "adaptation_corpus_sha256",
+    "arm",
+    "evaluation_order_sha256",
+    "heldout_corpus_sha256",
+    "heldout_outcomes",
+    "heldout_trace",
+    "heldout_updates_frozen",
+    "integrity_counters",
+    "masked_pair_config_sha256",
+    "outcome_schema_version",
+    "provenance",
+    "replay",
+    "run_seed",
+    "score",
+    "status",
+    "system_config",
+    "system_config_sha256",
+    "tape_sha256",
+    "task_config",
+    "task_config_sha256",
+    "trace_path",
+    "trace_sha256",
+}
+_REPLAY_KEYS = {
+    "digest_verified",
+    "item_count",
+    "items",
+    "operation_count",
+    "operations_per_item",
+    "status",
+    "tape_sha256",
+    "trainable_param_sha256_final",
+    "trainable_param_sha256_initial",
+}
+_REPLAY_ITEM_KEYS = {
+    "best_env_reward",
+    "instance_id",
+    "instance_index",
+    "integrity",
+    "item_sha256",
+    "operation_count",
+    "operations",
+    "sampling_provenance",
+    "sequence_index",
+    "status",
+    "trainable_param_sha256_after",
+    "trainable_param_sha256_before",
+}
+_REPLAY_OPERATION_KEYS = {
+    "batch_count",
+    "input_sha256",
+    "operation",
+    "trainable_param_sha256_after",
+    "trainable_param_sha256_before",
+}
+_HELDOUT_OUTCOME_KEYS = {
+    "instance_id",
+    "instance_index",
+    "integrity",
+    "reward",
+}
+_INTEGRITY_COUNTER_KEYS = set(_COUNTER_ZERO_FIELDS) | {
+    "parse_retries",
+    "repairs",
+}
+_TRACE_KEYS = {
+    "artifacts",
+    "execution",
+    "instance_outcomes",
+    "interactions",
+    "phase",
+    "result",
+    "schedule",
+    "status",
+    "system",
+    "system_artifacts",
+    "system_memory",
+    "task",
+    "task_brief",
+}
+_TRACE_SYSTEM_KEYS = {"continuity", "name", "params"}
+_TRACE_TASK_KEYS = {"name", "params"}
+_TRACE_EXECUTION_KEYS = {
+    "avg_response_seconds",
+    "end_time",
+    "max_response_seconds",
+    "run_group_id",
+    "run_index",
+    "start_time",
+    "total_interactions",
+    "total_response_seconds",
+    "usage",
+    "wall_duration_seconds",
+}
+_TRACE_INTERACTION_KEYS = {
+    "done",
+    "observation",
+    "query",
+    "response",
+    "step_number",
+    "timestamp",
+    "timing",
+    "usage",
+}
+_TERMINAL_QUERY_KEYS = {
+    "feedback",
+    "instance_id",
+    "instance_index",
+    "metadata",
+    "prompt",
+    "response_schema",
+}
+_TERMINAL_QUERY_METADATA_KEYS = {
+    "instance_idx",
+    "schedule_id",
+    "step",
+    "study_name",
+}
+_TERMINAL_RESPONSE_KEYS = {"action", "action_type", "metadata"}
+_TERMINAL_RESPONSE_METADATA_KEYS = {
+    "adaptation_context_policy",
+    "adaptation_count",
+    "context_policy",
+    "generation_max_new_tokens",
+    "has_truncated",
+    "interaction_count",
+    "last_adaptation_loss",
+    "last_feedback_reward",
+    "last_reward_advantage",
+    "last_reward_clipped_advantage",
+    "last_reward_judge_usage",
+    "last_reward_pg_loss",
+    "lora_param_norm_clip",
+    "method",
+    "model_path",
+    "output_tokens",
+    "parse_repair_used",
+    "parse_retries_used",
+    "prompt_tokens",
+    "reward_feedback_source",
+    "reward_judge_model",
+    "reward_judge_provider",
+    "reward_pg_negative_updates",
+    "reward_pg_positive_updates",
+    "reward_pg_updates",
+    "reward_ppo_clip",
+    "reward_update_rule",
+    "reward_update_terminal",
+    "system_type",
+    "truncation_count",
+    "ttt_history_truncation_count",
+    "ttt_rl_source",
+    "usage",
+}
+_TERMINAL_OBSERVATION_KEYS = {"content", "instance_complete", "metadata"}
+_TERMINAL_OBSERVATION_METADATA_KEYS = {
+    "cohort_gt",
+    "env_feedback_instance_id",
+    "env_feedback_instance_index",
+    "env_feedback_raw_metric_higher_is_better",
+    "env_feedback_raw_metric_name",
+    "env_feedback_raw_metric_value",
+    "env_feedback_reward",
+    "env_feedback_success",
+    "ref_survival",
+}
+_TRACE_OUTCOME_KEYS = {
+    "cost_usd",
+    "instance_id",
+    "instance_index",
+    "latency_seconds",
+    "metadata",
+    "raw_metric_higher_is_better",
+    "raw_metric_name",
+    "raw_metric_value",
+    "reward",
+    "success",
+}
+_TRACE_RESULT_KEYS = {
+    "eval_metrics",
+    "instance_outcomes",
+    "metrics",
+    "score",
+    "summary",
+}
+_GROUND_TRUTH_ENTRY_KEYS = {
+    "cohort_id",
+    "survival_12m",
+    "survival_24m",
+    "survival_36m",
+    "n_patients",
+}
+_REFERENCE_KEYS = {"survival_12m", "survival_24m", "survival_36m"}
+_TRACE_TASK_CONFIG_KEYS = {
+    "action_budget",
+    "dataset_path",
+    "num_instances",
+    "repeat_instructions",
+    "schedule",
+    "seed",
+}
+_TIME_HORIZONS = (12, 24, 36)
+_TERMINAL_PROMPT_SHA256 = (
+    "6ba5b389db30d6d7e9fd7b2b54c826e8bef971cb4616fd013655aeaed0fc7d4e"
+)
+_TERMINAL_RESPONSE_SCHEMA = "CohortSubmission"
 
 
 def _canonical_bytes(value: Any) -> bytes:
@@ -461,6 +738,131 @@ def _validate_corpus(
     return aggregate if _is_sha256(aggregate) else None, ids
 
 
+def _load_and_verify_checked_in_corpus(
+    *, role: str, formal_corpus: Any, errors: list[str]
+) -> dict[str, Any] | None:
+    """Close a formal corpus projection over every checked-in source byte."""
+
+    error_count = len(errors)
+    contract = _CHECKED_IN_DATASETS.get(role)
+    if contract is None:
+        errors.append(f"unknown checked-in corpus role: {role}")
+        return None
+    if not isinstance(formal_corpus, dict):
+        errors.append(f"formal {role} corpus must be an object")
+        return None
+
+    dataset_dir = ROOT / "data/cohort_studies" / contract["directory"]
+    manifest_path = dataset_dir / "manifest.json"
+    try:
+        manifest_bytes = manifest_path.read_bytes()
+        dataset_manifest = json.loads(manifest_bytes)
+    except (OSError, json.JSONDecodeError) as exc:
+        errors.append(f"cannot load checked-in {role} manifest.json: {exc}")
+        return None
+    manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
+    if manifest_digest != contract["manifest_sha256"]:
+        errors.append(f"checked-in {role} manifest.json registered SHA-256 mismatch")
+    if formal_corpus.get("dataset_manifest_sha256") != manifest_digest:
+        errors.append(f"checked-in {role} manifest.json SHA-256 mismatch")
+
+    artifacts = dataset_manifest.get("artifacts")
+    artifact_bytes: dict[str, bytes] = {}
+    if not isinstance(artifacts, list) or not artifacts:
+        errors.append(f"checked-in {role} manifest has no artifact inventory")
+        artifacts = []
+    dataset_root = dataset_dir.resolve()
+    seen_paths: set[str] = set()
+    for position, artifact in enumerate(artifacts):
+        label = f"checked-in {role} manifest/artifacts[{position}]"
+        if not _exact_keys(
+            artifact,
+            {"path", "sha256", "size_bytes"},
+            label=label,
+            errors=errors,
+        ):
+            if not isinstance(artifact, dict):
+                continue
+        relative_path = artifact.get("path")
+        if not isinstance(relative_path, str) or not relative_path:
+            errors.append(f"{label}: invalid artifact path")
+            continue
+        relative = Path(relative_path)
+        if relative.is_absolute():
+            errors.append(f"{label}: artifact path escapes dataset directory")
+            continue
+        try:
+            artifact_path = (dataset_dir / relative).resolve()
+            artifact_path.relative_to(dataset_root)
+        except (OSError, ValueError):
+            errors.append(f"{label}: artifact path escapes dataset directory")
+            continue
+        if relative_path in seen_paths:
+            errors.append(f"{label}: duplicate artifact path")
+            continue
+        seen_paths.add(relative_path)
+        expected_size = artifact.get("size_bytes")
+        expected_digest = artifact.get("sha256")
+        if not _is_int(expected_size) or expected_size < 0:
+            errors.append(f"{label}: invalid size_bytes")
+        if not _is_sha256(expected_digest):
+            errors.append(f"{label}: invalid SHA-256")
+        try:
+            raw = artifact_path.read_bytes()
+        except OSError as exc:
+            errors.append(f"{label}: cannot read artifact: {exc}")
+            continue
+        artifact_bytes[relative_path] = raw
+        if len(raw) != expected_size:
+            errors.append(f"{label}: artifact size_bytes mismatch")
+        if hashlib.sha256(raw).hexdigest() != expected_digest:
+            errors.append(f"{label}: artifact raw SHA-256 mismatch")
+
+    try:
+        artifacts_digest = canonical_sha256(artifacts)
+    except (TypeError, ValueError) as exc:
+        errors.append(f"cannot canonicalize checked-in {role} artifacts: {exc}")
+    else:
+        if artifacts_digest != dataset_manifest.get("corpus_sha256"):
+            errors.append(f"checked-in {role} artifacts corpus SHA-256 mismatch")
+
+    schedule_path = (
+        ROOT
+        / "src/tasks/cohort_studies/schedules"
+        / f"{EXPECTED_CORPORA[role]['schedule_id']}.json"
+    )
+    try:
+        schedule_bytes = schedule_path.read_bytes()
+    except OSError as exc:
+        errors.append(f"cannot read checked-in {role} schedule: {exc}")
+    else:
+        if (
+            hashlib.sha256(schedule_bytes).hexdigest()
+            != dataset_manifest.get("schedule_sha256")
+        ):
+            errors.append(f"checked-in {role} schedule raw SHA-256 mismatch")
+
+    try:
+        projection = corpus_projection_from_dataset_manifest(
+            dataset_manifest,
+            dataset_manifest_sha256=manifest_digest,
+            role=role,
+        )
+    except (TypeError, ValueError) as exc:
+        errors.append(f"cannot project checked-in {role} manifest.json: {exc}")
+        return None
+    if not strict_json_equal(projection, formal_corpus):
+        errors.append(f"formal {role} corpus differs from checked-in manifest projection")
+    if len(errors) != error_count:
+        return None
+    return {
+        "artifact_bytes": artifact_bytes,
+        "manifest": dataset_manifest,
+        "manifest_sha256": manifest_digest,
+        "projection": projection,
+    }
+
+
 def _validate_provenance(value: Any, errors: list[str]) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         errors.append("provenance: must be an object")
@@ -586,6 +988,115 @@ def _exact_keys(value: Any, expected: set[str], *, label: str, errors: list[str]
         errors.append(f"{label}: schema mismatch")
         return False
     return True
+
+
+def _validate_formal_exact_schema(manifest: dict[str, Any]) -> list[str]:
+    """Validate the publication evidence envelope with no ignored fields.
+
+    The semantic validators below remain responsible for values.  This pass is
+    deliberately separate so the preregistered ``no_schema_format_regression``
+    threshold is computed from an actual gate rather than asserted as a literal.
+    """
+
+    errors: list[str] = []
+
+    def exact(value: Any, expected: set[str], label: str) -> bool:
+        return _exact_keys(value, expected, label=label, errors=errors)
+
+    exact(manifest, _MANIFEST_KEYS, "manifest")
+    exact(manifest.get("provenance"), _PROVENANCE_KEYS, "provenance")
+    corpora = manifest.get("corpora")
+    if exact(corpora, _CORPORA_KEYS, "corpora"):
+        exact(
+            corpora.get("adaptation"),
+            _ADAPTATION_CORPUS_KEYS,
+            "corpora/adaptation",
+        )
+        exact(
+            corpora.get("heldout"),
+            _HELDOUT_CORPUS_KEYS,
+            "corpora/heldout",
+        )
+
+    pairs = manifest.get("pairs")
+    if not isinstance(pairs, list):
+        errors.append("pairs: must be a list")
+        return errors
+    for pair_index, pair in enumerate(pairs):
+        pair_label = f"pairs[{pair_index}]"
+        if not exact(pair, _PAIR_KEYS, pair_label):
+            if not isinstance(pair, dict):
+                continue
+        tape_verification = pair.get("tape_verification")
+        if exact(
+            tape_verification,
+            _TAPE_VERIFICATION_KEYS,
+            f"{pair_label}/tape_verification",
+        ):
+            verification_items = tape_verification.get("items")
+            if not isinstance(verification_items, list):
+                errors.append(f"{pair_label}/tape_verification/items: must be a list")
+            else:
+                for item_index, item in enumerate(verification_items):
+                    exact(
+                        item,
+                        _TAPE_VERIFICATION_ITEM_KEYS,
+                        f"{pair_label}/tape_verification/items[{item_index}]",
+                    )
+        for arm in ("active", "lr0"):
+            cell = pair.get(arm)
+            cell_label = f"{pair_label}/{arm}"
+            if not exact(cell, _CELL_KEYS, cell_label):
+                if not isinstance(cell, dict):
+                    continue
+            replay = cell.get("replay")
+            if exact(replay, _REPLAY_KEYS, f"{cell_label}/replay"):
+                replay_items = replay.get("items")
+                if not isinstance(replay_items, list):
+                    errors.append(f"{cell_label}/replay/items: must be a list")
+                else:
+                    for item_index, item in enumerate(replay_items):
+                        item_label = (
+                            f"{cell_label}/replay/items[{item_index}]"
+                        )
+                        if not exact(item, _REPLAY_ITEM_KEYS, item_label):
+                            if not isinstance(item, dict):
+                                continue
+                        exact(
+                            item.get("integrity"),
+                            _INTEGRITY_KEYS,
+                            f"{item_label}/integrity",
+                        )
+                        operations = item.get("operations")
+                        if not isinstance(operations, list):
+                            errors.append(f"{item_label}/operations: must be a list")
+                        else:
+                            for operation_index, operation in enumerate(operations):
+                                exact(
+                                    operation,
+                                    _REPLAY_OPERATION_KEYS,
+                                    f"{item_label}/operations[{operation_index}]",
+                                )
+            outcomes = cell.get("heldout_outcomes")
+            if not isinstance(outcomes, list):
+                errors.append(f"{cell_label}/heldout_outcomes: must be a list")
+            else:
+                for outcome_index, outcome in enumerate(outcomes):
+                    outcome_label = (
+                        f"{cell_label}/heldout_outcomes[{outcome_index}]"
+                    )
+                    if exact(outcome, _HELDOUT_OUTCOME_KEYS, outcome_label):
+                        exact(
+                            outcome.get("integrity"),
+                            _INTEGRITY_KEYS,
+                            f"{outcome_label}/integrity",
+                        )
+            exact(
+                cell.get("integrity_counters"),
+                _INTEGRITY_COUNTER_KEYS,
+                f"{cell_label}/integrity_counters",
+            )
+    return errors
 
 
 def _valid_token_batch(ids: Any, prompt_tokens: Any) -> bool:
@@ -1140,9 +1651,588 @@ def _expected_arm_config(arm: str, run_seed: int) -> dict[str, Any]:
     return expected
 
 
+def _load_checked_in_heldout_scoring_contract(
+    *,
+    heldout_corpus: Any,
+    heldout_ids: list[str],
+    errors: list[str],
+    checked_in_corpus: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Load and verify the immutable files needed to rescore terminal actions."""
+
+    if not isinstance(heldout_corpus, dict):
+        return None
+    if checked_in_corpus is None:
+        checked_in_corpus = _load_and_verify_checked_in_corpus(
+            role="heldout",
+            formal_corpus=heldout_corpus,
+            errors=errors,
+        )
+    if checked_in_corpus is None:
+        return None
+    verified_artifacts = checked_in_corpus.get("artifact_bytes")
+    if not isinstance(verified_artifacts, dict):
+        errors.append("checked-in held-out artifact bytes were not verified")
+        return None
+    loaded: dict[str, Any] = {}
+    for filename in ("ground_truth.json", "instance_references.json"):
+        raw = verified_artifacts.get(filename)
+        if not isinstance(raw, bytes):
+            errors.append(f"checked-in held-out {filename} bytes were not verified")
+            return None
+        try:
+            loaded[filename] = json.loads(raw)
+        except (json.JSONDecodeError, TypeError, UnicodeDecodeError) as exc:
+            errors.append(f"cannot parse checked-in held-out {filename}: {exc}")
+            return None
+
+    ground_truth_rows = loaded["ground_truth.json"]
+    if not isinstance(ground_truth_rows, list) or len(ground_truth_rows) != 36:
+        errors.append("checked-in held-out ground truth must contain 36 cohorts")
+        return None
+    ground_truth: dict[str, dict[str, Any]] = {}
+    for position, row in enumerate(ground_truth_rows):
+        label = f"checked-in ground_truth[{position}]"
+        if not _exact_keys(row, _GROUND_TRUTH_ENTRY_KEYS, label=label, errors=errors):
+            continue
+        cohort_id = row.get("cohort_id")
+        if not isinstance(cohort_id, str) or not cohort_id:
+            errors.append(f"{label}: invalid cohort_id")
+            continue
+        if cohort_id in ground_truth:
+            errors.append(f"{label}: duplicate cohort_id")
+        for field in ("survival_12m", "survival_24m", "survival_36m"):
+            value = row.get(field)
+            if not _is_number(value) or not 0.0 <= float(value) <= 1.0:
+                errors.append(f"{label}: {field} must be a probability")
+        if not _is_int(row.get("n_patients")) or row["n_patients"] < 0:
+            errors.append(f"{label}: n_patients must be nonnegative integer")
+        ground_truth[cohort_id] = row
+    if len(ground_truth) != 36:
+        return None
+
+    references = loaded["instance_references.json"]
+    if not isinstance(references, dict):
+        errors.append("checked-in held-out instance references must be an object")
+        return None
+    expected_variants = [instance_id.rsplit(":", 1)[-1] for instance_id in heldout_ids]
+    if set(references) != set(expected_variants):
+        errors.append("checked-in held-out instance reference IDs mismatch")
+    for variant, reference in references.items():
+        label = f"checked-in instance_references[{variant}]"
+        if not _exact_keys(reference, _REFERENCE_KEYS, label=label, errors=errors):
+            continue
+        for field in _REFERENCE_KEYS:
+            value = reference.get(field)
+            if not _is_number(value) or not 0.0 <= float(value) <= 1.0:
+                errors.append(f"{label}: {field} must be a probability")
+
+    cohort_gt = {
+        cohort_id: {
+            "cohort_id": row["cohort_id"],
+            "survival_12m": row["survival_12m"],
+            "survival_24m": row["survival_24m"],
+            "survival_36m": row["survival_36m"],
+            "n_patients": row["n_patients"],
+            "type_mixture": {},
+        }
+        for cohort_id, row in ground_truth.items()
+    }
+    action_keys = {
+        f"{cohort_id}__s{horizon}"
+        for cohort_id in ground_truth
+        for horizon in _TIME_HORIZONS
+    }
+    return {
+        "action_keys": action_keys,
+        "cohort_gt": cohort_gt,
+        "ground_truth": ground_truth,
+        "references": references,
+    }
+
+
+def _binary_kl_from_survival(true_survival: float, predicted_survival: float) -> float:
+    """Mirror the frozen Cohort scorer's smoothed binary KL in bits."""
+
+    true_value = min(1.0, max(0.0, float(true_survival)))
+    predicted_value = min(1.0, max(0.0, float(predicted_survival)))
+    true_dist = (
+        0.99 * true_value + 0.005,
+        0.99 * (1.0 - true_value) + 0.005,
+    )
+    predicted_dist = (
+        0.99 * predicted_value + 0.005,
+        0.99 * (1.0 - predicted_value) + 0.005,
+    )
+    value = sum(
+        probability * math.log2(probability / prediction)
+        for probability, prediction in zip(true_dist, predicted_dist, strict=True)
+        if probability > 0.0
+    )
+    return max(0.0, value)
+
+
+def _rescore_terminal_action(
+    action: Any,
+    *,
+    instance_id: str,
+    scoring_contract: dict[str, Any] | None,
+    label: str,
+    errors: list[str],
+) -> float | None:
+    """Independently score one exact 108-field terminal report."""
+
+    if scoring_contract is None:
+        errors.append(f"{label}: checked-in scoring contract is unavailable")
+        return None
+    expected_keys = scoring_contract["action_keys"]
+    if not _exact_keys(action, expected_keys, label=f"{label}/action", errors=errors):
+        return None
+    numeric_action: dict[str, float] = {}
+    for field, value in action.items():
+        if not _is_number(value) or not 0.0 <= float(value) <= 1.0:
+            errors.append(f"{label}/action: {field} must be a probability")
+        else:
+            numeric_action[field] = float(value)
+    if len(numeric_action) != len(expected_keys):
+        return None
+    variant = instance_id.rsplit(":", 1)[-1]
+    reference = scoring_contract["references"].get(variant)
+    if not isinstance(reference, dict):
+        errors.append(f"{label}: no checked-in reference for {variant}")
+        return None
+    ref_survival = tuple(
+        float(reference[f"survival_{horizon}m"])
+        for horizon in _TIME_HORIZONS
+    )
+    cohort_kls: list[float] = []
+    reference_kls: list[float] = []
+    for cohort_id, truth in scoring_contract["ground_truth"].items():
+        cohort_time_kls: list[float] = []
+        cohort_reference_kls: list[float] = []
+        for horizon, ref_value in zip(
+            _TIME_HORIZONS, ref_survival, strict=True
+        ):
+            predicted = numeric_action[f"{cohort_id}__s{horizon}"] or ref_value
+            truth_value = float(truth[f"survival_{horizon}m"])
+            cohort_time_kls.append(
+                _binary_kl_from_survival(truth_value, predicted)
+            )
+            cohort_reference_kls.append(
+                _binary_kl_from_survival(truth_value, ref_value)
+            )
+        cohort_kls.append(statistics.mean(cohort_time_kls))
+        reference_kls.append(statistics.mean(cohort_reference_kls))
+    return round(statistics.mean(reference_kls) - statistics.mean(cohort_kls), 6)
+
+
+def _trace_response_integrity(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Rebuild the runner's terminal response-integrity projection."""
+
+    llm_error = metadata.get("llm_error")
+    return {
+        "schema_valid": llm_error is None,
+        "synthetic": llm_error is not None,
+        "timed_out": bool(
+            isinstance(llm_error, dict)
+            and llm_error.get("error_type") == "_InstanceTimeout"
+        ),
+        "fallback": llm_error is not None,
+        "missing": False,
+        "hard_schema_failure": bool(
+            isinstance(llm_error, dict)
+            and "did not parse as the required JSON"
+            in str(llm_error.get("error_message", ""))
+        ),
+        "parse_retries": int(metadata.get("parse_retries_used", 0)),
+        "repairs": int(bool(metadata.get("parse_repair_used", False))),
+    }
+
+
+def _validate_bound_heldout_trace(
+    *,
+    cell: dict[str, Any],
+    pair_id: str,
+    label: str,
+    heldout_ids: list[str],
+    scoring_contract: dict[str, Any] | None,
+    errors: list[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Verify, independently rescore, and reconstruct held-out trace outcomes."""
+
+    trace = cell.get("heldout_trace")
+    if not isinstance(trace, dict):
+        errors.append(f"{label}: heldout_trace must be an object")
+        return [], []
+    _exact_keys(trace, _TRACE_KEYS, label=f"{label}/heldout_trace", errors=errors)
+    embedded_digest = cell.get("trace_sha256")
+    if not _is_sha256(embedded_digest):
+        errors.append(f"{label}: trace_sha256 must be a lowercase SHA-256")
+    else:
+        try:
+            recomputed = canonical_sha256(trace)
+        except (TypeError, ValueError) as exc:
+            errors.append(f"{label}: cannot canonicalize heldout_trace: {exc}")
+        else:
+            if recomputed != embedded_digest:
+                errors.append(f"{label}: embedded held-out trace SHA-256 mismatch")
+    if not isinstance(cell.get("trace_path"), str) or not cell["trace_path"]:
+        errors.append(f"{label}: trace_path must be a non-empty string")
+    if trace.get("status") != "completed":
+        errors.append(f"{label}: held-out trace status must be completed")
+    if trace.get("phase") != "baseline":
+        errors.append(f"{label}: held-out trace phase must be baseline")
+    if trace.get("schedule") != EXPECTED_TASK_CONFIG["schedule"]:
+        errors.append(f"{label}: held-out trace schedule mismatch")
+
+    trace_system = trace.get("system")
+    if _exact_keys(
+        trace_system,
+        _TRACE_SYSTEM_KEYS,
+        label=f"{label}/heldout_trace/system",
+        errors=errors,
+    ):
+        if trace_system.get("name") != "qwen_local":
+            errors.append(f"{label}: held-out trace system name mismatch")
+        if not strict_json_equal(trace_system.get("params"), cell.get("system_config")):
+            errors.append(f"{label}: held-out trace system params mismatch")
+
+    trace_task = trace.get("task")
+    if _exact_keys(
+        trace_task,
+        _TRACE_TASK_KEYS,
+        label=f"{label}/heldout_trace/task",
+        errors=errors,
+    ):
+        if trace_task.get("name") != "cohort_studies":
+            errors.append(f"{label}: held-out trace task name mismatch")
+        cell_task_config = cell.get("task_config")
+        expected_trace_task = (
+            {
+                key: cell_task_config.get(key)
+                for key in _TRACE_TASK_CONFIG_KEYS
+            }
+            if isinstance(cell_task_config, dict)
+            else None
+        )
+        if not strict_json_equal(trace_task.get("params"), expected_trace_task):
+            errors.append(f"{label}: held-out trace task params mismatch")
+
+    interactions = trace.get("interactions")
+    if not isinstance(interactions, list):
+        errors.append(f"{label}: held-out trace interactions must be a list")
+        interactions = []
+    max_interactions = EXPECTED_OUTCOMES * (
+        int(EXPECTED_TASK_CONFIG["action_budget"]) + 1
+    )
+    if not EXPECTED_OUTCOMES * 2 <= len(interactions) <= max_interactions:
+        errors.append(
+            f"{label}: held-out trace interaction count is outside the "
+            "preregistered per-instance bounds"
+        )
+    execution = trace.get("execution")
+    if _exact_keys(
+        execution,
+        _TRACE_EXECUTION_KEYS,
+        label=f"{label}/heldout_trace/execution",
+        errors=errors,
+    ):
+        if execution.get("total_interactions") != len(interactions):
+            errors.append(f"{label}: trace execution interaction count mismatch")
+        if execution.get("run_group_id") != pair_id:
+            errors.append(f"{label}: held-out trace run_group_id mismatch")
+        if execution.get("run_index") != 0:
+            errors.append(f"{label}: held-out trace run_index must be zero")
+
+    terminal_by_identity: dict[tuple[Any, Any], dict[str, Any]] = {}
+    terminal_signatures: list[dict[str, Any]] = []
+    terminal_count = 0
+    segment_length = 0
+    for interaction_index, interaction in enumerate(interactions):
+        interaction_label = (
+            f"{label}/heldout_trace/interactions[{interaction_index}]"
+        )
+        if not _exact_keys(
+            interaction,
+            _TRACE_INTERACTION_KEYS,
+            label=interaction_label,
+            errors=errors,
+        ):
+            if not isinstance(interaction, dict):
+                continue
+        if interaction.get("step_number") != interaction_index + 1:
+            errors.append(f"{interaction_label}: non-canonical step_number")
+        expected_segment_id = (
+            heldout_ids[terminal_count]
+            if terminal_count < len(heldout_ids)
+            else None
+        )
+        query_for_segment = interaction.get("query")
+        if not isinstance(query_for_segment, dict) or (
+            query_for_segment.get("instance_id"),
+            query_for_segment.get("instance_index"),
+        ) != (expected_segment_id, terminal_count):
+            errors.append(f"{interaction_label}: interaction left canonical instance segment")
+        segment_length += 1
+        if segment_length > int(EXPECTED_TASK_CONFIG["action_budget"]) + 1:
+            errors.append(f"{interaction_label}: instance segment exceeds action budget")
+        observation = interaction.get("observation")
+        if not isinstance(observation, dict):
+            continue
+        if observation.get("instance_complete") is not True:
+            if interaction.get("done") is not False:
+                errors.append(f"{interaction_label}: nonterminal done must be false")
+            continue
+        terminal_position = terminal_count
+        terminal_count += 1
+        if not 2 <= segment_length <= int(EXPECTED_TASK_CONFIG["action_budget"]) + 1:
+            errors.append(f"{interaction_label}: invalid instance segment length")
+        segment_length = 0
+        if interaction.get("done") is not (
+            terminal_position == EXPECTED_OUTCOMES - 1
+        ):
+            errors.append(f"{interaction_label}: terminal done flag mismatch")
+        _exact_keys(
+            observation,
+            _TERMINAL_OBSERVATION_KEYS,
+            label=f"{interaction_label}/observation",
+            errors=errors,
+        )
+        query = interaction.get("query")
+        response = interaction.get("response")
+        if not isinstance(query, dict) or not isinstance(response, dict):
+            errors.append(
+                f"{label}/heldout_trace/interactions[{interaction_index}]: "
+                "terminal query/response must be objects"
+            )
+            continue
+        _exact_keys(
+            query,
+            _TERMINAL_QUERY_KEYS,
+            label=f"{interaction_label}/query",
+            errors=errors,
+        )
+        _exact_keys(
+            response,
+            _TERMINAL_RESPONSE_KEYS,
+            label=f"{interaction_label}/response",
+            errors=errors,
+        )
+        query_metadata = query.get("metadata")
+        response_metadata = response.get("metadata")
+        observation_metadata = observation.get("metadata")
+        if not _exact_keys(
+            query_metadata,
+            _TERMINAL_QUERY_METADATA_KEYS,
+            label=f"{interaction_label}/query/metadata",
+            errors=errors,
+        ):
+            continue
+        if not _exact_keys(
+            response_metadata,
+            _TERMINAL_RESPONSE_METADATA_KEYS,
+            label=f"{interaction_label}/response/metadata",
+            errors=errors,
+        ):
+            continue
+        if not _exact_keys(
+            observation_metadata,
+            _TERMINAL_OBSERVATION_METADATA_KEYS,
+            label=f"{interaction_label}/observation/metadata",
+            errors=errors,
+        ):
+            continue
+        expected_instance_id = (
+            heldout_ids[terminal_position]
+            if terminal_position < len(heldout_ids)
+            else None
+        )
+        identity = (query.get("instance_id"), query.get("instance_index"))
+        expected_identity = (expected_instance_id, terminal_position)
+        observation_identity = (
+            observation_metadata.get("env_feedback_instance_id"),
+            observation_metadata.get("env_feedback_instance_index"),
+        )
+        if identity != expected_identity or observation_identity != expected_identity:
+            errors.append(f"{interaction_label}: terminal identity chain mismatch")
+        if query_metadata.get("instance_idx") != terminal_position:
+            errors.append(f"{interaction_label}: query instance_idx mismatch")
+        if query_metadata.get("schedule_id") != EXPECTED_TASK_CONFIG["schedule"]:
+            errors.append(f"{interaction_label}: query schedule_id mismatch")
+        if query_metadata.get("step") != "submission_extraction":
+            errors.append(f"{interaction_label}: query terminal step mismatch")
+        prompt = query.get("prompt")
+        if not isinstance(prompt, str) or hashlib.sha256(
+            prompt.encode()
+        ).hexdigest() != _TERMINAL_PROMPT_SHA256:
+            errors.append(f"{interaction_label}: terminal prompt SHA-256 mismatch")
+        if query.get("response_schema") != _TERMINAL_RESPONSE_SCHEMA:
+            errors.append(f"{interaction_label}: response_schema mismatch")
+        variant = (
+            expected_instance_id.rsplit(":", 1)[-1]
+            if isinstance(expected_instance_id, str)
+            else ""
+        )
+        if not isinstance(query_metadata.get("study_name"), str) or not query_metadata[
+            "study_name"
+        ]:
+            errors.append(f"{interaction_label}: terminal study_name must be non-empty")
+        terminal_signatures.append(
+            {
+                "instance_id": expected_instance_id,
+                "prompt_sha256": (
+                    hashlib.sha256(prompt.encode()).hexdigest()
+                    if isinstance(prompt, str)
+                    else None
+                ),
+                "response_schema": query.get("response_schema"),
+                "study_name": query_metadata.get("study_name"),
+            }
+        )
+        if response.get("action_type") != "structured":
+            errors.append(f"{interaction_label}: terminal action_type mismatch")
+        rescored_reward = _rescore_terminal_action(
+            response.get("action"),
+            instance_id=str(expected_instance_id),
+            scoring_contract=scoring_contract,
+            label=interaction_label,
+            errors=errors,
+        )
+        reference = (
+            scoring_contract["references"].get(variant)
+            if scoring_contract is not None
+            else None
+        )
+        expected_reference = (
+            [reference[f"survival_{horizon}m"] for horizon in _TIME_HORIZONS]
+            if isinstance(reference, dict)
+            else None
+        )
+        if not strict_json_equal(
+            observation_metadata.get("ref_survival"), expected_reference
+        ):
+            errors.append(f"{interaction_label}: checked-in ref_survival mismatch")
+        if scoring_contract is None or not strict_json_equal(
+            observation_metadata.get("cohort_gt"), scoring_contract["cohort_gt"]
+        ):
+            errors.append(f"{interaction_label}: checked-in cohort_gt mismatch")
+        if rescored_reward is not None:
+            for field in ("env_feedback_reward", "env_feedback_raw_metric_value"):
+                value = observation_metadata.get(field)
+                if not _is_number(value) or not math.isclose(
+                    float(value), rescored_reward, rel_tol=0.0, abs_tol=1e-12
+                ):
+                    errors.append(
+                        f"{interaction_label}: {field} differs from independent score"
+                    )
+            if observation_metadata.get("env_feedback_success") is not (
+                rescored_reward > 0.0
+            ):
+                errors.append(f"{interaction_label}: env_feedback_success mismatch")
+        if (
+            observation_metadata.get("env_feedback_raw_metric_name")
+            != "kl_information_gain_bits"
+        ):
+            errors.append(f"{interaction_label}: env feedback metric name mismatch")
+        if observation_metadata.get(
+            "env_feedback_raw_metric_higher_is_better"
+        ) is not True:
+            errors.append(f"{interaction_label}: env feedback metric direction mismatch")
+        if identity in terminal_by_identity:
+            errors.append(f"{label}: duplicate terminal identities in held-out trace")
+        terminal_by_identity[identity] = {
+            "integrity": _trace_response_integrity(response_metadata),
+            "reward": rescored_reward,
+        }
+    if terminal_count != EXPECTED_OUTCOMES:
+        errors.append(f"{label}: held-out trace must contain exactly 20 terminals")
+    if segment_length != 0:
+        errors.append(f"{label}: held-out trace ends inside an instance segment")
+
+    trace_outcomes = trace.get("instance_outcomes")
+    if not isinstance(trace_outcomes, list) or len(trace_outcomes) != EXPECTED_OUTCOMES:
+        errors.append(
+            f"{label}: held-out trace instance_outcomes must contain exactly 20 rows"
+        )
+        return [], terminal_signatures
+    result = trace.get("result")
+    if not _exact_keys(
+        result,
+        _TRACE_RESULT_KEYS,
+        label=f"{label}/heldout_trace/result",
+        errors=errors,
+    ):
+        result = {}
+    result_outcomes = result.get("instance_outcomes")
+    if not strict_json_equal(result_outcomes, trace_outcomes):
+        errors.append(f"{label}: trace/result instance_outcomes mismatch")
+
+    reconstructed: list[dict[str, Any]] = []
+    rewards: list[float] = []
+    for position, trace_outcome in enumerate(trace_outcomes):
+        row_label = f"{label}/heldout_trace/instance_outcomes[{position}]"
+        if not _exact_keys(
+            trace_outcome,
+            _TRACE_OUTCOME_KEYS,
+            label=row_label,
+            errors=errors,
+        ):
+            continue
+        instance_id = trace_outcome.get("instance_id")
+        instance_index = trace_outcome.get("instance_index")
+        reward = trace_outcome.get("reward")
+        if position < len(heldout_ids) and instance_id != heldout_ids[position]:
+            errors.append(f"{row_label}: held-out instance ID/order mismatch")
+        if instance_index != position:
+            errors.append(f"{row_label}: non-canonical instance_index")
+        if not _is_number(reward):
+            errors.append(f"{row_label}: reward must be finite numeric")
+            continue
+        identity = (instance_id, instance_index)
+        terminal = terminal_by_identity.get(identity)
+        if terminal is None or terminal.get("reward") is None:
+            errors.append(f"{row_label}: missing independently scored terminal")
+            continue
+        independent_reward = float(terminal["reward"])
+        if not math.isclose(
+            float(reward), independent_reward, rel_tol=0.0, abs_tol=1e-12
+        ):
+            errors.append(f"{row_label}: reward differs from independent score")
+        raw_value = trace_outcome.get("raw_metric_value")
+        if not _is_number(raw_value) or not math.isclose(
+            float(raw_value), independent_reward, rel_tol=0.0, abs_tol=1e-12
+        ):
+            errors.append(f"{row_label}: raw_metric_value differs from score")
+        if trace_outcome.get("raw_metric_name") != "kl_information_gain_bits":
+            errors.append(f"{row_label}: raw_metric_name mismatch")
+        if trace_outcome.get("raw_metric_higher_is_better") is not True:
+            errors.append(f"{row_label}: raw metric direction mismatch")
+        if trace_outcome.get("success") is not (independent_reward > 0.0):
+            errors.append(f"{row_label}: success differs from score sign")
+        numeric_reward = independent_reward
+        rewards.append(numeric_reward)
+        reconstructed.append(
+            {
+                "instance_id": instance_id,
+                "instance_index": instance_index,
+                "integrity": terminal["integrity"],
+                "reward": numeric_reward,
+            }
+        )
+    if len(rewards) == EXPECTED_OUTCOMES:
+        trace_score = statistics.mean(rewards)
+        result_score = result.get("score")
+        if not _is_number(result_score) or not math.isclose(
+            float(result_score), trace_score, rel_tol=0.0, abs_tol=1e-12
+        ):
+            errors.append(f"{label}: trace result score is not the trace reward mean")
+    return reconstructed, terminal_signatures
+
+
 def _validate_cell(
     *,
     pair_label: str,
+    pair_id: str,
     run_seed: int,
     arm: str,
     cell: Any,
@@ -1153,6 +2243,7 @@ def _validate_cell(
     adaptation_digest: str | None,
     heldout_digest: str | None,
     heldout_ids: list[str],
+    scoring_contract: dict[str, Any] | None,
     errors: list[str],
 ) -> dict[str, Any] | None:
     label = f"{pair_label}/{arm}"
@@ -1202,6 +2293,15 @@ def _validate_cell(
     expected_order_digest = canonical_sha256(heldout_ids)
     if cell.get("evaluation_order_sha256") != expected_order_digest:
         errors.append(f"{label}: evaluation_order_sha256 mismatch")
+
+    trace_outcomes, terminal_signatures = _validate_bound_heldout_trace(
+        cell=cell,
+        pair_id=pair_id,
+        label=label,
+        heldout_ids=heldout_ids,
+        scoring_contract=scoring_contract,
+        errors=errors,
+    )
 
     replay = cell.get("replay")
     replay_summary: dict[str, Any] | None = None
@@ -1397,6 +2497,12 @@ def _validate_cell(
             errors.append(f"{outcome_label}: held-out instance ID/order mismatch")
         if instance_index != position:
             errors.append(f"{outcome_label}: non-canonical instance_index")
+        if position >= len(trace_outcomes) or not strict_json_equal(
+            outcome, trace_outcomes[position]
+        ):
+            errors.append(
+                f"{outcome_label}: outcome/reward/integrity differs from bound trace"
+            )
         reward = outcome.get("reward")
         if not _is_number(reward):
             errors.append(f"{outcome_label}: reward must be finite numeric")
@@ -1435,6 +2541,7 @@ def _validate_cell(
             "score": score,
             "parse_retries": parse_retries,
             "repairs": repairs,
+            "terminal_signatures": terminal_signatures,
         }
 
     return {
@@ -1467,6 +2574,9 @@ def evaluate(manifest: Any) -> dict[str, Any]:
     errors: list[str] = []
     if not isinstance(manifest, dict):
         return _invalid_report(["formal manifest must be a JSON object"])
+    schema_errors = _validate_formal_exact_schema(manifest)
+    schema_gate_passed = not schema_errors
+    errors.extend(schema_errors)
     if manifest.get("schema_version") != SCHEMA_VERSION:
         errors.append("schema_version mismatch")
     if manifest.get("experiment") != EXPERIMENT:
@@ -1479,8 +2589,22 @@ def evaluate(manifest: Any) -> dict[str, Any]:
         )
     if manifest.get("limitation") != LIMITATION:
         errors.append("limitation must retain not exact historical replication")
-    if not _is_sha256(manifest.get("preregistration_sha256")):
+    preregistration_sha256 = manifest.get("preregistration_sha256")
+    try:
+        checked_in_preregistration_sha256 = hashlib.sha256(
+            (ROOT / PREREGISTRATION_FILENAME).read_bytes()
+        ).hexdigest()
+    except OSError as exc:
+        errors.append(f"cannot read checked-in preregistration file: {exc}")
+    else:
+        if checked_in_preregistration_sha256 != EXPECTED_PREREGISTRATION_SHA256:
+            errors.append("checked-in preregistration file SHA-256 drift")
+    if not _is_sha256(preregistration_sha256):
         errors.append("preregistration_sha256 must be a lowercase SHA-256")
+    elif preregistration_sha256 != EXPECTED_PREREGISTRATION_SHA256:
+        errors.append(
+            "preregistration_sha256 differs from checked-in preregistration"
+        )
 
     provenance = _validate_provenance(manifest.get("provenance"), errors)
     corpora = manifest.get("corpora")
@@ -1492,6 +2616,22 @@ def evaluate(manifest: Any) -> dict[str, Any]:
     )
     heldout_digest, heldout_ids = _validate_corpus(
         "heldout", corpora.get("heldout"), errors
+    )
+    _load_and_verify_checked_in_corpus(
+        role="adaptation",
+        formal_corpus=corpora.get("adaptation"),
+        errors=errors,
+    )
+    checked_in_heldout = _load_and_verify_checked_in_corpus(
+        role="heldout",
+        formal_corpus=corpora.get("heldout"),
+        errors=errors,
+    )
+    scoring_contract = _load_checked_in_heldout_scoring_contract(
+        heldout_corpus=corpora.get("heldout"),
+        heldout_ids=heldout_ids,
+        errors=errors,
+        checked_in_corpus=checked_in_heldout,
     )
     if (
         adaptation_digest is not None
@@ -1548,6 +2688,7 @@ def evaluate(manifest: Any) -> dict[str, Any]:
         )
         active = _validate_cell(
             pair_label=pair_label,
+            pair_id=pair_id,
             run_seed=run_seed,
             arm="active",
             cell=pair.get("active"),
@@ -1558,10 +2699,12 @@ def evaluate(manifest: Any) -> dict[str, Any]:
             adaptation_digest=adaptation_digest,
             heldout_digest=heldout_digest,
             heldout_ids=heldout_ids,
+            scoring_contract=scoring_contract,
             errors=errors,
         )
         lr0 = _validate_cell(
             pair_label=pair_label,
+            pair_id=pair_id,
             run_seed=run_seed,
             arm="lr0",
             cell=pair.get("lr0"),
@@ -1572,6 +2715,7 @@ def evaluate(manifest: Any) -> dict[str, Any]:
             adaptation_digest=adaptation_digest,
             heldout_digest=heldout_digest,
             heldout_ids=heldout_ids,
+            scoring_contract=scoring_contract,
             errors=errors,
         )
         if active is None or lr0 is None:
@@ -1609,6 +2753,12 @@ def evaluate(manifest: Any) -> dict[str, Any]:
         if isinstance(active_outcomes, dict) and isinstance(lr0_outcomes, dict):
             if active_outcomes["identities"] != lr0_outcomes["identities"]:
                 errors.append(f"{pair_label}: paired held-out outcome order mismatch")
+            if active_outcomes["terminal_signatures"] != lr0_outcomes[
+                "terminal_signatures"
+            ]:
+                errors.append(
+                    f"{pair_label}: paired terminal prompt/schema/study signatures differ"
+                )
             active_repair_total = (
                 active_outcomes["parse_retries"] + active_outcomes["repairs"]
             )
@@ -1665,7 +2815,7 @@ def evaluate(manifest: Any) -> dict[str, Any]:
         "mean_delta_gte_0_02": raw_mean_delta >= GO_MEAN_DELTA,
         "ci_95_lower_gt_0": ci_lower > 0.0,
         "integrity_gate_passed": True,
-        "no_schema_format_regression": True,
+        "no_schema_format_regression": schema_gate_passed,
     }
     passed = all(threshold_checks.values())
     return {

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from assemble_cohort_causal_manifest import _verify_tape, assemble_manifest
-from run_cohort_causal import _collector_manifest_path
+from run_cohort_causal import _collector_manifest_path, _trace_paths
 from validate_cohort_causal_results import canonical_sha256
 
 
@@ -89,6 +89,15 @@ def test_assemble_formal_manifest_splits_label_and_binds_all_cells(tmp_path):
         )
         for arm in ("active", "lr0"):
             cfg = cells[(seed, arm)]
+            trace_path, _ = _trace_paths(tmp_path, cfg)
+            trace = {
+                "phase": "baseline",
+                "status": "completed",
+                "instance_outcomes": [],
+                "interactions": [],
+                "result": {"instance_outcomes": [], "score": 0.0},
+            }
+            _write_json(trace_path, trace)
             _write_json(
                 tmp_path / cfg["cell_manifest_path"],
                 {
@@ -96,10 +105,12 @@ def test_assemble_formal_manifest_splits_label_and_binds_all_cells(tmp_path):
                     "arm": arm,
                     "tape_sha256": tape["tape_sha256"],
                     "provenance": provenance,
+                    "trace_path": str(trace_path),
+                    "trace_sha256": canonical_sha256(trace),
                 },
             )
-    preregistration = tmp_path / "prereg.md"
-    preregistration.write_text("frozen preregistration\n")
+    preregistration = tmp_path / "COHORT_QONLY_CAUSAL_PREREG.md"
+    shutil.copyfile(REPO_ROOT / preregistration.name, preregistration)
 
     manifest = assemble_manifest(
         root=tmp_path,
@@ -115,6 +126,11 @@ def test_assemble_formal_manifest_splits_label_and_binds_all_cells(tmp_path):
         "corpora"
     ]["heldout"]["canonical_instance_ids"]
     assert all(set(pair) >= {"tape", "active", "lr0"} for pair in manifest["pairs"])
+    assert all(
+        "heldout_trace" in pair[arm]
+        for pair in manifest["pairs"]
+        for arm in ("active", "lr0")
+    )
 
     first_collector = grid["collectors"][0]
     collector_path = _collector_manifest_path(tmp_path, first_collector)
@@ -127,4 +143,31 @@ def test_assemble_formal_manifest_splits_label_and_binds_all_cells(tmp_path):
             grid=grid,
             provenance=provenance,
             preregistration_path=preregistration,
+        )
+
+    bad_collector["provenance"] = provenance
+    _write_json(collector_path, bad_collector)
+    first_active = cells[(first_collector["run_seed"], "active")]
+    trace_path, _ = _trace_paths(tmp_path, first_active)
+    trace = json.loads(trace_path.read_text())
+    trace["status"] = "tampered-after-cell-publication"
+    _write_json(trace_path, trace)
+    with pytest.raises(ValueError, match="trace SHA-256 mismatch during assembly"):
+        assemble_manifest(
+            root=tmp_path,
+            grid=grid,
+            provenance=provenance,
+            preregistration_path=preregistration,
+        )
+
+    trace["status"] = "completed"
+    _write_json(trace_path, trace)
+    alternate_preregistration = tmp_path / "alternate-prereg.md"
+    alternate_preregistration.write_bytes(preregistration.read_bytes())
+    with pytest.raises(ValueError, match="path is not the checked-in"):
+        assemble_manifest(
+            root=tmp_path,
+            grid=grid,
+            provenance=provenance,
+            preregistration_path=alternate_preregistration,
         )
