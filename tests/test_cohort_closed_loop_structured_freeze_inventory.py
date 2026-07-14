@@ -245,6 +245,25 @@ def test_dirty_and_untracked_worktrees_fail_before_inventory(
         _build(untracked)
 
 
+def test_ignored_nested_python_file_fails_before_inventory(tmp_path: Path) -> None:
+    fixture = _make_repo(tmp_path / "ignored")
+    (fixture.root / ".gitignore").write_text("ignored/\n", encoding="utf-8")
+    _git(fixture.root, "add", ".gitignore")
+    _git(fixture.root, "commit", "-q", "-m", "freeze ignore rule")
+    fixture = replace(fixture, head=_git(fixture.root, "rev-parse", "HEAD"))
+    ignored_python = fixture.root / "ignored" / "nested" / "hidden.py"
+    ignored_python.parent.mkdir(parents=True)
+    ignored_python.write_bytes(b"raise RuntimeError('must not be hidden')\n")
+    assert not _git(
+        fixture.root,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+    )
+    with pytest.raises(inventory.FreezeInventoryError, match="ignored untracked"):
+        _build(fixture)
+
+
 def test_clean_tracked_symlink_source_is_rejected(tmp_path: Path) -> None:
     fixture = _make_repo(tmp_path / "repo")
     registrar = fixture.root / "cohort_closed_loop_structured_context_registrar.py"

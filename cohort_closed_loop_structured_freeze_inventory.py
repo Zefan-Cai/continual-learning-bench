@@ -563,6 +563,11 @@ def _clean_test_git_root(
         raise FreezeInventoryError("test Git root or pinned HEAD differs")
     if _git(root, ("status", "--porcelain=v1", "--untracked-files=all")):
         raise FreezeInventoryError("test Git worktree is dirty or has untracked files")
+    if _git(
+        root,
+        ("ls-files", "-z", "--others", "--ignored", "--exclude-standard"),
+    ):
+        raise FreezeInventoryError("test Git worktree has ignored untracked files")
     if (
         subprocess.run(
             ["git", "-C", os.fspath(root), "cat-file", "-e", f"{tip}^{{commit}}"],
