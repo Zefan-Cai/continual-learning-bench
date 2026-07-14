@@ -234,6 +234,68 @@ attestation proving that no production structured DGP, context registry,
 precommit, receipt, raw trace, model output, report, or decision exists beneath
 the registered structured durable root.
 
+### Trigger validator inventory and publication order
+
+The Trigger-A validator inventory is a separate prospective authorization
+artifact with exactly these eight source roles, in lexicographic order:
+
+```text
+causal_completion_attester
+causal_terminal_revalidator
+pretrigger_absence_adapter
+structured_atomic_publisher
+trigger_execution_seal_builder
+trigger_receipt_builder
+trigger_receipt_publisher
+trigger_receipt_revalidator
+```
+
+All eight absolute paths are distinct. The receipt builder and receipt
+revalidator have distinct file digests, and neither publisher digest may alias
+any other role. The receipt revalidator is a separate source file; it does not
+import or call the receipt builder and independently reconstructs the complete
+receipt from the registered raw bytes.
+
+Inventory registration is Mode A of the fixed trigger publisher. It verifies
+the exact clean Git HEAD, committed source blobs, source paths, sizes and
+digests, then atomically publishes
+`control/trigger_validator_inventory.json`. This commit must happen before the
+causal trigger execution seal exists. Its registered timestamp must be
+strictly earlier than the seal timestamp; equality is invalid. Timestamp order
+is only an additional check and never substitutes for the already committed
+Mode-A artifact and its valid intent/no-pending publication evidence.
+
+Mode B observes that committed inventory, obtains and atomically publishes the
+fresh absence attestation, constructs the receipt in memory from every raw
+causal and source input, invokes the separate receipt revalidator, and only
+then atomically publishes `control/trigger_receipt.json`. Immediately before
+the receipt commit, it rereads every registered raw causal evidence path, the
+validator inventory, absence attestation, and all eight source files through
+anchored no-follow traversal and requires exact byte equality with the bytes
+that were validated. Drift leaves no receipt final, intent, or pending file.
+The already published absence artifact poisons that attempt and is not removed.
+
+Both modes run under service identity
+`cohort-structured-trigger-absence-v1`, exact UID `41001`. The structured root
+and its control directory are owned by that UID with exact mode `0700`. The
+absence artifact records root device, inode, owner UID, exact integer mode, and
+mount identity. A non-unique longest matching mount record, alternate mount,
+cross-device descent, symlink, non-regular file, unexpected path, or registered
+pending file fails closed. At the absence-scan boundary, the only files allowed
+are the committed validator inventory and its deterministic publication intent;
+the absence artifact and its intent are added only after that scan succeeds.
+
+The exported production publisher entry points use only their source-bound
+default builder, independent revalidator, absence adapter, and atomic
+publisher. Runtime callable injection is forbidden. A private test helper may
+accept injected callables only for non-production temporary roots and rejects
+the production root grammar.
+
+The resulting receipt remains explicitly non-authorizing for DGP, model,
+scorer, or launch calls. It is only an input to the next pure protocol-plan
+seal builder, which remains fail closed until all later production blockers are
+closed.
+
 ## Fixed roots and identifiers
 
 Let:
@@ -306,6 +368,71 @@ reports/stage_report.json
 No `latest`, implicit attempt, glob-selected input, or fallback output is valid.
 A whole-stage retry is forbidden unless one of the exact retry transitions
 below exists. A valid scientific no-go or pass is never retried.
+
+### Deployment-capture lease and double observation
+
+The deployment snapshot is produced only by the fixed production capture
+entry point. That entry point accepts no runtime, clock, lease, Git, filesystem,
+or publisher callable. It runs as the closed-loop control-service UID/GID
+`41001`, distinct from deployment owner UID/GID `41002` and consistent with
+the trigger publication boundary above. The durable attempt root and its
+`control` directory remain owned by `41001` with exact mode `0700`. Checkout and
+asset roots and every observed subdirectory are owned by `41002:41002` with
+exact mode `0550`; every observed source, control, and asset file is owned by
+`41002:41002` with exact mode `0440`. Their selected mounts must report `ro`
+and not `rw` in both mount and superblock options. The unique longest matching
+mount record's major:minor must equal `st_dev`; a stacked equal-length mount,
+alternate nested mount, symlink, or device transition fails closed.
+
+Before any observation, the capture process creates exactly:
+
+```text
+<durable_root>/control/deployment_snapshot.capture.lease.json
+```
+
+Creation uses `O_CREAT|O_EXCL|O_NOFOLLOW`; the deterministic name is never
+removed or reused. An existing lease, including a stale lease, permanently
+poisons the attempt. The newly created descriptor is locked with nonblocking
+exclusive `flock` and remains open and locked until both observations and all
+three atomic publications have completed or failed. Lock failure also leaves
+the lease path as poison. The canonical lease receipt binds source commit,
+attempt, path, capture/deployment identities, boot ID, PID and Linux process
+start ticks, mount-namespace identity, held-descriptor device/inode/owner/mode/
+size, creation time, and its self-digest. Its exact final mode is `0400`.
+
+While that one descriptor remains locked, the capture performs two complete
+global observations in this exact order: held lease bytes and descriptor
+identity; boot ID; PID/start ticks; mount namespace; complete relevant
+`/proc/self/mountinfo` bytes; raw Git HEAD, porcelain-v1-z status, recursive
+submodule status, and stage-z index bytes; checkout root/directories and every
+registered source/control file's bytes plus metadata; then every asset root,
+directory, and file's bytes plus metadata in registered role and relative-path
+order. Every traversal is directory-fd anchored with `O_NOFOLLOW`.
+
+Each observation is separately canonical and atomically published at:
+
+```text
+<durable_root>/control/deployment_snapshot.observation-1.json
+<durable_root>/control/deployment_snapshot.observation-2.json
+```
+
+The normalized `state_sha256` excludes only observation ordinal and observation
+time. The two complete normalized state objects and hashes must be byte-for-byte
+equal. The final canonical snapshot binds the immutable lease receipt and both
+complete observation files, their paths, sizes, file SHA-256 values and equal
+state hashes, and is atomically published last at
+`control/deployment_snapshot.json`. Publication order is observation 1,
+observation 2, snapshot; the lease remains locked across all three calls.
+
+The pure snapshot validator consumes the raw lease and both raw observations in
+addition to every source, control, inventory, Git-index, and asset byte edge. It
+recomputes all self-digests, raw bindings, metadata/content joins, mount and
+identity policies, normalized equality, and publication paths. These artifacts
+grant no DGP, model, scorer, launch, or operational authority. A distinct fresh
+downstream consumer revalidation adapter is still required and currently
+unavailable; therefore `dgp_generation_authorized=false` remains mandatory.
+A private injected orchestration helper is allowed only for nonproduction
+roots and rejects either production root grammar.
 
 ## Protocol-plan seal source and asset inventory
 
