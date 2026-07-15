@@ -257,32 +257,88 @@ def sealed_trigger_fixture(tmp_path: Path) -> dict[str, Any]:
 
     formal_roles: dict[Path, list[str]] = {}
     for index in range(3):
+        cfg_id = f"collector-{index}"
         formal_roles[
-            _write_json(artifact_root / "tapes" / f"collector-{index}.json", {"i": index})
+            _write_json(artifact_root / "tapes" / f"{cfg_id}.json", {"i": index})
         ] = ["formal_tape"]
         formal_roles[
             _write_json(
-                artifact_root / "collectors" / f"collector-{index}.manifest.json",
+                artifact_root / "collectors" / f"{cfg_id}.manifest.json",
                 {"i": index},
             )
         ] = ["collector_manifest"]
         formal_roles[
             _write_json(
-                artifact_root / "traces" / f"collector-{index}.trace.json",
+                artifact_root / "traces" / f"{cfg_id}.trace.json",
                 {"i": index},
             )
         ] = ["collector_final_trace"]
-    for index in range(6):
+        formal_roles[
+            _write(
+                artifact_root
+                / "sealed_logs"
+                / "formal"
+                / f"{cfg_id}.stdout_stderr.age",
+                b"age-encrypted-collector-log",
+            )
+        ] = ["sealed_cell_log"]
         formal_roles[
             _write_json(
-                artifact_root / "cells" / f"cell-{index}.manifest.json", {"i": index}
+                artifact_root
+                / "sealed_logs"
+                / "formal"
+                / f"{cfg_id}.receipt.json",
+                {"cfg_id": cfg_id, "status": "sealed"},
+            )
+        ] = ["sealed_cell_log_receipt"]
+        formal_roles[
+            _write_json(
+                artifact_root
+                / "sealed_logs"
+                / "formal"
+                / f"{cfg_id}.start.json",
+                {"cfg_id": cfg_id, "status": "started"},
+            )
+        ] = ["sealed_cell_log_start_receipt"]
+    for index in range(6):
+        cfg_id = f"cell-{index}"
+        formal_roles[
+            _write_json(
+                artifact_root / "cells" / f"{cfg_id}.manifest.json", {"i": index}
             )
         ] = ["cell_manifest"]
         formal_roles[
             _write_json(
-                artifact_root / "traces" / f"cell-{index}.trace.json", {"i": index}
+                artifact_root / "traces" / f"{cfg_id}.trace.json", {"i": index}
             )
         ] = ["cell_final_trace"]
+        formal_roles[
+            _write(
+                artifact_root
+                / "sealed_logs"
+                / "formal"
+                / f"{cfg_id}.stdout_stderr.age",
+                b"age-encrypted-cell-log",
+            )
+        ] = ["sealed_cell_log"]
+        formal_roles[
+            _write_json(
+                artifact_root
+                / "sealed_logs"
+                / "formal"
+                / f"{cfg_id}.receipt.json",
+                {"cfg_id": cfg_id, "status": "sealed"},
+            )
+        ] = ["sealed_cell_log_receipt"]
+        formal_roles[
+            _write_json(
+                artifact_root
+                / "sealed_logs"
+                / "formal"
+                / f"{cfg_id}.start.json",
+                {"cfg_id": cfg_id, "status": "started"},
+            )
+        ] = ["sealed_cell_log_start_receipt"]
 
     expectation = {
         "artifact_root": artifact_root.as_posix(),

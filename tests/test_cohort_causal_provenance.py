@@ -39,6 +39,7 @@ def _make_checkout(tmp_path: Path, *, omit: str | None = None) -> Path:
         if relative in {
             "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V1.md",
             "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V2.md",
+            "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V3.md",
             provenance.STATISTICAL_ADDENDUM_FILENAME,
         }:
             path.write_bytes((provenance.ROOT / relative).read_bytes())
@@ -136,6 +137,7 @@ def test_bundle_is_deterministic_and_matches_runner_contract(tmp_path: Path) -> 
     [
         "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V1.md",
         "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V2.md",
+        "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V3.md",
     ],
 )
 def test_evaluation_inventory_binds_infrastructure_retry_amendments(

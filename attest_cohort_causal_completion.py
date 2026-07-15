@@ -76,8 +76,11 @@ _EXPECTED_INVENTORY = {
     "collector_manifests": 3,
     "formal_decisions": 1,
     "formal_manifests": 1,
+    "sealed_cell_log_receipts": 9,
+    "sealed_cell_log_start_receipts": 9,
+    "sealed_cell_logs": 9,
     "tapes": 3,
-    "total": 23,
+    "total": 50,
 }
 _PROVENANCE_KEYS = frozenset(
     {
@@ -530,6 +533,19 @@ def _add_formal_inventory(
         registered_paths.add(absolute)
         builder.add(absolute, role=role)
 
+    def add_sealed_log(cfg_id: str) -> None:
+        sealed_root = artifact_root / "sealed_logs" / "formal"
+        add_unique(
+            sealed_root / f"{cfg_id}.stdout_stderr.age", "sealed_cell_log"
+        )
+        add_unique(
+            sealed_root / f"{cfg_id}.start.json",
+            "sealed_cell_log_start_receipt",
+        )
+        add_unique(
+            sealed_root / f"{cfg_id}.receipt.json", "sealed_cell_log_receipt"
+        )
+
     for row in collectors:
         cfg_id = claim_cfg(row, "collector")
         tape_relative = _safe_registered_relative(row.get("tape_path"), "tape_path")
@@ -545,6 +561,7 @@ def _add_formal_inventory(
             artifact_root / "traces" / f"{cfg_id}.trace.json",
             "collector_final_trace",
         )
+        add_sealed_log(cfg_id)
     for row in cells:
         cfg_id = claim_cfg(row, "cell")
         manifest_relative = _safe_registered_relative(
@@ -558,6 +575,7 @@ def _add_formal_inventory(
             artifact_root / "traces" / f"{cfg_id}.trace.json",
             "cell_final_trace",
         )
+        add_sealed_log(cfg_id)
 
     add_unique(artifact_root / "formal_manifest.json", "formal_manifest")
     add_unique(artifact_root / "formal_decision.json", "formal_decision")

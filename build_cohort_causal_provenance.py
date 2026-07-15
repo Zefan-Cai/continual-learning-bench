@@ -11,8 +11,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import platform
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -40,8 +42,11 @@ AUDIT_KIND = "cohort_causal_provenance_audit"
 # This is intentionally an allowlist, not a source-tree glob.  Adding or moving
 # evaluation-affecting code must be an explicit provenance-contract change.
 EVALUATION_CODE_ALLOWLIST = (
+    "COHORT_CAUSAL_LOG_RECIPIENT_V1.txt",
+    "COHORT_CAUSAL_SEALED_LOG_RUNTIME_V1.json",
     "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V1.md",
     "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V2.md",
+    "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V3.md",
     "COHORT_QONLY_CAUSAL_PREREG.md",
     "COHORT_QONLY_CAUSAL_STATISTICAL_ADDENDUM_V1.md",
     "assemble_cohort_causal_manifest.py",
@@ -51,6 +56,7 @@ EVALUATION_CODE_ALLOWLIST = (
     "grid_cohort_causal_smoke.json",
     "launch_cohort_causal.sh",
     "run_cohort_causal.py",
+    "run_cohort_causal_cell_sealed.py",
     "run_cohort_causal_formal_registered.py",
     "src/artifacts.py",
     "src/errors.py",
@@ -255,8 +261,47 @@ def _nvidia_driver_versions() -> list[str]:
     )
 
 
+def _age_runtime() -> dict[str, Any]:
+    binary_value = os.environ.get("COHORT_CAUSAL_AGE_BINARY") or shutil.which("age")
+    if binary_value is None:
+        return {"installed": False}
+    binary = Path(binary_value)
+    if (
+        not binary.is_absolute()
+        or binary.is_symlink()
+        or not binary.is_file()
+        or binary.resolve() != binary
+    ):
+        raise RuntimeError("age runtime is not a direct absolute regular file")
+    digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+    completed = subprocess.run(
+        [str(binary), "--version"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0 or not completed.stdout.strip():
+        raise RuntimeError("age runtime version cannot be captured")
+    contract_path = ROOT / "COHORT_CAUSAL_SEALED_LOG_RUNTIME_V1.json"
+    try:
+        contract = json.loads(contract_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("sealed-log runtime contract cannot be loaded") from exc
+    if (
+        contract.get("age_binary_sha256") != digest
+        or contract.get("age_version") != completed.stdout.strip()
+    ):
+        raise RuntimeError("age runtime differs from the sealed-log contract")
+    return {
+        "binary_path": str(binary),
+        "binary_sha256": digest,
+        "installed": True,
+        "version": completed.stdout.strip(),
+    }
+
+
 def collect_environment_payload() -> dict[str, Any]:
-    """Collect only versioned runtime facts; never read environment variables."""
+    """Collect versioned runtime facts and the explicit pinned-age path only."""
 
     return {
         "pip_freeze_all": _pip_freeze_all(),
@@ -275,6 +320,7 @@ def collect_environment_payload() -> dict[str, Any]:
             "version_info": list(sys.version_info[:5]),
         },
         "runtime_versions": {
+            "age": _age_runtime(),
             "nvidia_driver_versions": _nvidia_driver_versions(),
             "torch": _torch_runtime(),
         },

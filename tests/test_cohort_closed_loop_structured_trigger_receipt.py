@@ -548,6 +548,24 @@ def _fixture() -> dict[str, Any]:
                     f"ct{index}".encode(),
                     100,
                 ),
+                (
+                    f"{artifact}/sealed_logs/formal/collector-{index}.stdout_stderr.age",
+                    ["sealed_cell_log"],
+                    f"collector-ciphertext-{index}".encode(),
+                    100,
+                ),
+                (
+                    f"{artifact}/sealed_logs/formal/collector-{index}.receipt.json",
+                    ["sealed_cell_log_receipt"],
+                    f"collector-receipt-{index}".encode(),
+                    100,
+                ),
+                (
+                    f"{artifact}/sealed_logs/formal/collector-{index}.start.json",
+                    ["sealed_cell_log_start_receipt"],
+                    f"collector-start-{index}".encode(),
+                    100,
+                ),
             ]
         )
     for index in range(6):
@@ -563,6 +581,24 @@ def _fixture() -> dict[str, Any]:
                     f"{artifact}/traces/cell-{index}.json",
                     ["cell_final_trace"],
                     f"cellt{index}".encode(),
+                    100,
+                ),
+                (
+                    f"{artifact}/sealed_logs/formal/cell-{index}.stdout_stderr.age",
+                    ["sealed_cell_log"],
+                    f"cell-ciphertext-{index}".encode(),
+                    100,
+                ),
+                (
+                    f"{artifact}/sealed_logs/formal/cell-{index}.receipt.json",
+                    ["sealed_cell_log_receipt"],
+                    f"cell-receipt-{index}".encode(),
+                    100,
+                ),
+                (
+                    f"{artifact}/sealed_logs/formal/cell-{index}.start.json",
+                    ["sealed_cell_log_start_receipt"],
+                    f"cell-start-{index}".encode(),
                     100,
                 ),
             ]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prospective, outcome-blind formal wrapper for causal-retry-002.
+"""Prospective, outcome-blind formal wrapper for causal-retry-003.
 
 The wrapper registers its process identity and launch expectation before any
 model call, then waits for a no-overwrite authorization binding the complete
@@ -29,15 +29,16 @@ from types import ModuleType
 from typing import Any, Callable, Mapping, Sequence
 
 
-RETRY_ID = "causal-retry-002"
+RETRY_ID = "causal-retry-003"
 ATTEMPT_ID = "attempt-002"
 CLOSED_SOURCE_COMMITS = frozenset(
     {
         "1caf142f6ce611da8da8691d4c336388a4c3c4b3",
         "059b26b45180b5a295c4c1b36a180cb2a91d5405",
+        "6e0a638a7d0700d6df0b75f4c99ced9fae0f1324",
     }
 )
-RETRY_AMENDMENT_FILENAME = "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V2.md"
+RETRY_AMENDMENT_FILENAME = "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V3.md"
 CHECKOUT_BASE = Path("/mnt/localssd/ttt-rl-cohort-causal")
 DURABLE_BASE = Path("/sensei-fs/users/zcai/TTT-RL/cohort-qonly-causal")
 REQUIRE_PUSHED_REMOTE_REF = True
@@ -73,15 +74,21 @@ EXPECTED_FINAL_INVENTORY = {
     "collector_manifests": 3,
     "formal_decisions": 1,
     "formal_manifests": 1,
+    "sealed_cell_log_receipts": 9,
+    "sealed_cell_log_start_receipts": 9,
+    "sealed_cell_logs": 9,
     "tapes": 3,
-    "total": 23,
+    "total": 50,
 }
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 CRITICAL_TRACKED_FILES = (
     "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V1.md",
+    "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V2.md",
     RETRY_AMENDMENT_FILENAME,
+    "COHORT_CAUSAL_LOG_RECIPIENT_V1.txt",
+    "COHORT_CAUSAL_SEALED_LOG_RUNTIME_V1.json",
     "assemble_cohort_causal_manifest.py",
     "build_cohort_causal_provenance.py",
     "build_cohort_structured_state_execution_seal.py",
@@ -89,6 +96,7 @@ CRITICAL_TRACKED_FILES = (
     "grid_cohort_causal_formal.json",
     "launch_cohort_causal.sh",
     "run_cohort_causal_formal_registered.py",
+    "run_cohort_causal_cell_sealed.py",
     "validate_cohort_causal_results.py",
     "validate_cohort_causal_smoke.py",
     "wait_cohort_causal_phase_outputs.py",

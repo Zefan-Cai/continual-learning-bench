@@ -93,6 +93,8 @@ def _terminal_fixture(
     exit_bytes: bytes = b"0\n",
     duplicate_raw_json: bool = False,
     duplicate_decision_json: bool = False,
+    sealed_runner_exit: int = 0,
+    sealed_digest_mismatch: bool = False,
 ) -> dict[str, Any]:
     root = (tmp_path / "checkout").resolve()
     durable = (tmp_path / "durable" / "attempt-002").resolve()
@@ -110,6 +112,24 @@ def _terminal_fixture(
     prereg = _write(root / revalidator.PREREGISTRATION_FILENAME, b"registered\n")
     addendum = _write(root / revalidator.STATISTICAL_ADDENDUM_FILENAME, b"addendum\n")
     evaluation_code = _write(root / "registered_eval.py", b"VALUE = 1\n")
+    recipient = _write(
+        root / "COHORT_CAUSAL_LOG_RECIPIENT_V1.txt",
+        b"age1testrecipient0000000000000000000000000000000000000000000000\n",
+    )
+    age_binary_sha256 = "a" * 64
+    runtime_contract = _write_json(
+        root / "COHORT_CAUSAL_SEALED_LOG_RUNTIME_V1.json",
+        {
+            "age_archive_sha256": "b" * 64,
+            "age_archive_url": "https://example.invalid/age.tar.gz",
+            "age_binary_sha256": age_binary_sha256,
+            "age_version": "v1.3.1",
+            "private_identity_on_experiment_host": False,
+            "recipient_file": recipient.name,
+            "recipient_sha256": _sha(recipient.read_bytes()),
+            "schema_version": 1,
+        },
+    )
 
     datasets: dict[str, Any] = {}
     for role in ("adaptation", "heldout"):
@@ -141,6 +161,66 @@ def _terminal_fixture(
     collectors = []
     cells = []
     raw_json_paths: list[Path] = []
+    sealed_role_paths: dict[Path, list[str]] = {}
+
+    def add_sealed(cfg_id: str, phase: str, ordinal: int) -> None:
+        ciphertext = _write(
+            artifact_root
+            / "sealed_logs"
+            / "formal"
+            / f"{cfg_id}.stdout_stderr.age",
+            f"age-encrypted-log-{cfg_id}".encode(),
+        )
+        shared = {
+            "age_binary_sha256": age_binary_sha256,
+            "age_version": "v1.3.1",
+            "boot_id": "test-boot-id",
+            "cfg_id": cfg_id,
+            "experiment_kind": "formal",
+            "phase": phase,
+            "private_identity_absence_verified": True,
+            "recipient_sha256": _sha(recipient.read_bytes()),
+            "runner_pid": 1000 + ordinal,
+            "runner_start_time_ticks": 2000 + ordinal,
+            "runtime_contract_sha256": _sha(runtime_contract.read_bytes()),
+            "runtime_home_sha256": _sha(f"runtime-home-{cfg_id}".encode()),
+            "schema_version": 1,
+            "sealer_pid": 3000 + ordinal,
+            "sealer_start_time_ticks": 4000 + ordinal,
+            "supervisor_pid": 5000 + ordinal,
+            "supervisor_start_time_ticks": 6000 + ordinal,
+        }
+        start_value = {
+            **shared,
+            "event": "start",
+            "published_at_utc": "2026-07-14T00:00:00Z",
+        }
+        start = _write_json(
+            artifact_root / "sealed_logs" / "formal" / f"{cfg_id}.start.json",
+            start_value,
+        )
+        finish_value = {
+            **shared,
+            "ciphertext_sha256": (
+                "f" * 64
+                if sealed_digest_mismatch
+                else _sha(ciphertext.read_bytes())
+            ),
+            "ciphertext_size_bytes": ciphertext.stat().st_size,
+            "event": "finish",
+            "published_at_utc": "2026-07-14T00:01:00Z",
+            "runner_exit_code": sealed_runner_exit,
+            "sealer_exit_code": 0,
+            "start_receipt_sha256": _sha(start.read_bytes()),
+        }
+        finish = _write_json(
+            artifact_root / "sealed_logs" / "formal" / f"{cfg_id}.receipt.json",
+            finish_value,
+        )
+        sealed_role_paths[ciphertext] = ["sealed_cell_log"]
+        sealed_role_paths[start] = ["sealed_cell_log_start_receipt"]
+        sealed_role_paths[finish] = ["sealed_cell_log_receipt"]
+
     for index in range(3):
         cfg_id = f"collector-{index}"
         tape_relative = Path("artifacts/cohort_causal/tapes") / f"{cfg_id}.json"
@@ -158,6 +238,7 @@ def _terminal_fixture(
                 {"trace": cfg_id},
             )
         )
+        add_sealed(cfg_id, "collectors", index)
         collectors.append(
             {"cfg_id": cfg_id, "run_seed": index + 1, "tape_path": tape_relative.as_posix()}
         )
@@ -178,6 +259,7 @@ def _terminal_fixture(
                     {"trace": cell_id},
                 )
             )
+            add_sealed(cell_id, "evaluation_cells", 3 + 2 * index + (arm == "lr0"))
             cells.append(
                 {
                     "arm": arm,
@@ -199,13 +281,15 @@ def _terminal_fixture(
     }
     grid_path = _write_json(root / "grid_cohort_causal_formal.json", grid, pretty=True)
 
-    evaluation_record = {
-        "path": evaluation_code.relative_to(root).as_posix(),
-        "role": "evaluation_code",
-        "sha256": _sha(evaluation_code.read_bytes()),
-        "size_bytes": evaluation_code.stat().st_size,
-    }
-    evaluation_records = [evaluation_record]
+    evaluation_records = [
+        {
+            "path": path.relative_to(root).as_posix(),
+            "role": "evaluation_code",
+            "sha256": _sha(path.read_bytes()),
+            "size_bytes": path.stat().st_size,
+        }
+        for path in sorted((evaluation_code, recipient, runtime_contract))
+    ]
     source_commit = "1" * 40
     provenance = {
         "adapter_init_seed": 2026071400,
@@ -223,7 +307,7 @@ def _terminal_fixture(
         "canonicalization": "test",
         "environment": {},
         "evaluation_code": {
-            "allowlist": [evaluation_record["path"]],
+            "allowlist": [record["path"] for record in evaluation_records],
             "files": evaluation_records,
             "inventory_sha256": provenance["evaluation_code_sha256"],
         },
@@ -395,12 +479,15 @@ def _terminal_fixture(
         prereg: ["causal_prereg"],
         addendum: ["statistical_addendum"],
         evaluation_code: ["evaluation_code"],
+        recipient: ["evaluation_code"],
+        runtime_contract: ["evaluation_code"],
         provenance_path: ["compact_provenance"],
         details_path: ["detailed_provenance"],
         pid_path: ["wrapper_pid_file"],
         exit_path: ["wrapper_exit_file"],
         formal_manifest: ["formal_manifest"],
         formal_decision: ["formal_decision"],
+        **sealed_role_paths,
     }
     for role in ("adaptation", "heldout"):
         dataset_root = root / datasets[role]["path"]
@@ -590,6 +677,31 @@ def test_valid_branches_publish_byte_identical_decision_and_redacted_receipt(
     assert receipt["decision_scope"] == scope
     assert not ({"aggregate", "pairs", "deltas", "threshold_checks"} & set(receipt))
     assert json.loads(fixture["receipt"].read_text()) == receipt
+
+
+def test_attested_nonzero_sealed_runner_exit_fails_before_efficacy(
+    tmp_path: Path,
+) -> None:
+    fixture = _terminal_fixture(tmp_path, sealed_runner_exit=1)
+
+    with pytest.raises(revalidator.RevalidationError, match="completion contract"):
+        _run(fixture)
+    assert not fixture["revalidated"].exists()
+    assert not fixture["receipt"].exists()
+
+
+def test_attested_bad_ciphertext_binding_fails_before_efficacy(
+    tmp_path: Path,
+) -> None:
+    fixture = _terminal_fixture(tmp_path, sealed_digest_mismatch=True)
+
+    with pytest.raises(
+        revalidator.RevalidationError,
+        match="start/finish/ciphertext binding",
+    ):
+        _run(fixture)
+    assert not fixture["revalidated"].exists()
+    assert not fixture["receipt"].exists()
 
 
 def test_attested_raw_tamper_fails_before_recomputation(tmp_path: Path) -> None:

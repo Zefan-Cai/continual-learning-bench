@@ -53,9 +53,9 @@ def test_registered_phase_inventory_covers_every_final_and_live_path(
         root=tmp_path, grid=grid, section="evaluation_cells"
     )
 
-    assert len(collector_required) == 3 * len(grid["collectors"])
+    assert len(collector_required) == 6 * len(grid["collectors"])
     assert len(collector_forbidden) == len(grid["collectors"])
-    assert len(eval_required) == 2 * len(grid["evaluation_cells"])
+    assert len(eval_required) == 5 * len(grid["evaluation_cells"])
     assert len(eval_forbidden) == len(grid["evaluation_cells"])
     assert all(
         path.name.endswith(".trace.live.json")

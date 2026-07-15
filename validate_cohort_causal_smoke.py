@@ -20,6 +20,10 @@ from run_cohort_causal import (
     load_grid,
     load_provenance,
 )
+from run_cohort_causal_cell_sealed import (
+    SealedCellError,
+    validate_sealed_phase_value,
+)
 from validate_cohort_causal_results import (
     EXPECTED_STATISTICAL_ADDENDUM_SHA256,
     LIMITATION,
@@ -184,6 +188,19 @@ def validate_smoke(
     if len(collectors) != 1 or len(cells) != 2:
         errors.append("smoke grid must contain exactly 1 collector and 2 cells")
         return _report(errors, None, None, provenance)
+    for section, expected_count in (("collectors", 1), ("evaluation_cells", 2)):
+        try:
+            sealed_count = validate_sealed_phase_value(
+                root=root,
+                grid=grid,
+                section=section,
+                recipient_file=root / "COHORT_CAUSAL_LOG_RECIPIENT_V1.txt",
+            )
+        except SealedCellError as exc:
+            errors.append(f"sealed {section} integrity failed: {exc}")
+        else:
+            if sealed_count != expected_count:
+                errors.append(f"sealed {section} inventory count differs")
 
     collector_cfg = collectors[0]
     collector = _load_object(_collector_manifest_path(root, collector_cfg))

@@ -76,8 +76,11 @@ EXPECTED_REGISTERED_COUNTS = {
     "collector_manifests": 3,
     "formal_decisions": 1,
     "formal_manifests": 1,
+    "sealed_cell_log_receipts": 9,
+    "sealed_cell_log_start_receipts": 9,
+    "sealed_cell_logs": 9,
     "tapes": 3,
-    "total": 23,
+    "total": 50,
 }
 
 REQUIRED_VALIDATOR_BINDING_IDS = tuple(

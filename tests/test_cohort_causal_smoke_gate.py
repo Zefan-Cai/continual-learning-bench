@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import run_cohort_causal_cell_sealed as sealed
 from assemble_cohort_causal_manifest import _verify_tape
 from run_cohort_causal import (
     PREREGISTERED_PARENT_COMMIT,
@@ -328,6 +329,87 @@ def _install_valid_smoke(tmp_path: Path):
         path = tmp_path / cfg["cell_manifest_path"]
         _write(path, cell)
         cell_paths[arm] = path
+
+    recipient_path = tmp_path / "COHORT_CAUSAL_LOG_RECIPIENT_V1.txt"
+    shutil.copy2(REPO_ROOT / recipient_path.name, recipient_path)
+    runtime_contract_path = tmp_path / "COHORT_CAUSAL_SEALED_LOG_RUNTIME_V1.json"
+    shutil.copy2(REPO_ROOT / runtime_contract_path.name, runtime_contract_path)
+    runtime_contract = json.loads(runtime_contract_path.read_text())
+    runtime_contract_sha256 = hashlib.sha256(
+        runtime_contract_path.read_bytes()
+    ).hexdigest()
+    recipient_sha256 = hashlib.sha256(recipient_path.read_bytes()).hexdigest()
+    for section in ("collectors", "evaluation_cells"):
+        for index, cfg in enumerate(grid[section]):
+            cfg_id = cfg["cfg_id"]
+            sealed_root = (
+                tmp_path
+                / "artifacts"
+                / "cohort_causal"
+                / "sealed_logs"
+                / "smoke"
+            )
+            ciphertext = f"age-ciphertext-placeholder-{cfg_id}".encode()
+            start = {
+                "age_binary_sha256": runtime_contract["age_binary_sha256"],
+                "age_version": runtime_contract["age_version"],
+                "boot_id": "smoke-test-boot",
+                "cfg_id": cfg_id,
+                "event": "start",
+                "experiment_kind": "smoke",
+                "phase": section,
+                "published_at_utc": "2026-07-14T00:00:00Z",
+                "private_identity_absence_verified": True,
+                "recipient_sha256": recipient_sha256,
+                "runner_pid": 1000 + index,
+                "runner_start_time_ticks": 2000 + index,
+                "schema_version": 1,
+                "sealer_pid": 3000 + index,
+                "sealer_start_time_ticks": 4000 + index,
+                "supervisor_pid": 5000 + index,
+                "supervisor_start_time_ticks": 6000 + index,
+                "runtime_contract_sha256": runtime_contract_sha256,
+                "runtime_home_sha256": hashlib.sha256(
+                    f"runtime-home-{cfg_id}".encode()
+                ).hexdigest(),
+            }
+            start_payload = sealed._canonical_bytes(start)
+            receipt = {
+                "age_binary_sha256": start["age_binary_sha256"],
+                "age_version": start["age_version"],
+                "boot_id": start["boot_id"],
+                "cfg_id": cfg_id,
+                "ciphertext_sha256": hashlib.sha256(ciphertext).hexdigest(),
+                "ciphertext_size_bytes": len(ciphertext),
+                "event": "finish",
+                "experiment_kind": "smoke",
+                "phase": section,
+                "published_at_utc": "2026-07-14T00:01:00Z",
+                "private_identity_absence_verified": True,
+                "recipient_sha256": recipient_sha256,
+                "runner_exit_code": 0,
+                "runner_pid": start["runner_pid"],
+                "runner_start_time_ticks": start["runner_start_time_ticks"],
+                "schema_version": 1,
+                "sealer_exit_code": 0,
+                "sealer_pid": start["sealer_pid"],
+                "sealer_start_time_ticks": start["sealer_start_time_ticks"],
+                "start_receipt_sha256": hashlib.sha256(start_payload).hexdigest(),
+                "supervisor_pid": start["supervisor_pid"],
+                "supervisor_start_time_ticks": start[
+                    "supervisor_start_time_ticks"
+                ],
+                "runtime_contract_sha256": start["runtime_contract_sha256"],
+                "runtime_home_sha256": start["runtime_home_sha256"],
+            }
+            _write_bytes = {
+                sealed_root / f"{cfg_id}.stdout_stderr.age": ciphertext,
+                sealed_root / f"{cfg_id}.start.json": start_payload,
+                sealed_root / f"{cfg_id}.receipt.json": sealed._canonical_bytes(receipt),
+            }
+            for output_path, payload in _write_bytes.items():
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_bytes(payload)
     return grid, provenance, cell_paths
 
 

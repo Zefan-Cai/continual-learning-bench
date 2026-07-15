@@ -63,6 +63,37 @@ RECEIPT_FILENAME = "causal_formal.revalidation_receipt.json"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _PID_RE = re.compile(rb"[1-9][0-9]*\n?\Z")
 _ASCII_WHITESPACE = b" \t\n\r\v\f"
+_SEALED_CFG_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
+
+_SEALED_START_KEYS = {
+    "age_binary_sha256",
+    "age_version",
+    "boot_id",
+    "cfg_id",
+    "event",
+    "experiment_kind",
+    "phase",
+    "private_identity_absence_verified",
+    "published_at_utc",
+    "recipient_sha256",
+    "runner_pid",
+    "runner_start_time_ticks",
+    "runtime_contract_sha256",
+    "runtime_home_sha256",
+    "schema_version",
+    "sealer_pid",
+    "sealer_start_time_ticks",
+    "supervisor_pid",
+    "supervisor_start_time_ticks",
+}
+_SEALED_FINISH_KEYS = {
+    *_SEALED_START_KEYS,
+    "ciphertext_sha256",
+    "ciphertext_size_bytes",
+    "runner_exit_code",
+    "sealer_exit_code",
+    "start_receipt_sha256",
+}
 
 _ATTESTATION_KEYS = {
     "causal_pre_attestation_inventory_sha256",
@@ -96,6 +127,9 @@ _REGISTERED_COUNTS_KEYS = {
     "collector_manifests",
     "formal_decisions",
     "formal_manifests",
+    "sealed_cell_log_receipts",
+    "sealed_cell_log_start_receipts",
+    "sealed_cell_logs",
     "tapes",
     "total",
 }
@@ -106,8 +140,11 @@ _EXPECTED_REGISTERED_COUNTS = {
     "collector_manifests": 3,
     "formal_decisions": 1,
     "formal_manifests": 1,
+    "sealed_cell_log_receipts": 9,
+    "sealed_cell_log_start_receipts": 9,
+    "sealed_cell_logs": 9,
     "tapes": 3,
-    "total": 23,
+    "total": 50,
 }
 _PID_EXIT_KEYS = {
     "exit_after_outputs_status",
@@ -586,6 +623,187 @@ def _load_strict_json_file(path: Path, *, label: str) -> tuple[Any, bytes]:
     return _load_json_bytes(payload, label=label), payload
 
 
+def _validate_sealed_receipt_scalar_contract(
+    value: dict[str, Any], *, start: bool, label: str
+) -> None:
+    if (
+        value["schema_version"] != 1
+        or value["event"] != ("start" if start else "finish")
+        or value["experiment_kind"] != "formal"
+        or value["phase"] not in {"collectors", "evaluation_cells"}
+        or not isinstance(value["cfg_id"], str)
+        or _SEALED_CFG_ID_RE.fullmatch(value["cfg_id"]) is None
+        or not isinstance(value["boot_id"], str)
+        or not value["boot_id"]
+        or not isinstance(value["published_at_utc"], str)
+        or not value["published_at_utc"]
+        or not isinstance(value["age_version"], str)
+        or not value["age_version"]
+        or value["private_identity_absence_verified"] is not True
+    ):
+        raise RevalidationError(f"{label} scalar contract differs")
+    for name in (
+        "age_binary_sha256",
+        "recipient_sha256",
+        "runtime_contract_sha256",
+        "runtime_home_sha256",
+    ):
+        if not _is_sha256(value[name]):
+            raise RevalidationError(f"{label} digest contract differs")
+    for prefix in ("runner", "sealer", "supervisor"):
+        if (
+            not _is_int(value[f"{prefix}_pid"])
+            or value[f"{prefix}_pid"] <= 0
+            or not _is_int(value[f"{prefix}_start_time_ticks"])
+            or value[f"{prefix}_start_time_ticks"] <= 0
+        ):
+            raise RevalidationError(f"{label} process identity differs")
+    if not start and (
+        value["runner_exit_code"] != 0
+        or value["sealer_exit_code"] != 0
+        or not _is_int(value["ciphertext_size_bytes"])
+        or value["ciphertext_size_bytes"] <= 0
+        or not _is_sha256(value["ciphertext_sha256"])
+        or not _is_sha256(value["start_receipt_sha256"])
+    ):
+        raise RevalidationError(f"{label} completion contract differs")
+
+
+def _validate_outcome_blind_sealed_logs(
+    *,
+    root: Path,
+    artifact_root: Path,
+    grid: Any,
+    inventory: dict[str, dict[str, Any]],
+) -> None:
+    """Independently bind formal ciphertext transport before efficacy opening."""
+
+    if not isinstance(grid, dict) or grid.get("kind") != "formal":
+        raise RevalidationError("outcome-blind sealed-log grid is invalid")
+    sections = {
+        "collectors": grid.get("collectors"),
+        "evaluation_cells": grid.get("evaluation_cells"),
+    }
+    if not isinstance(sections["collectors"], list) or len(
+        sections["collectors"]
+    ) != 3:
+        raise RevalidationError("outcome-blind collector inventory is invalid")
+    if not isinstance(sections["evaluation_cells"], list) or len(
+        sections["evaluation_cells"]
+    ) != 6:
+        raise RevalidationError("outcome-blind cell inventory is invalid")
+
+    recipient_path = root / "COHORT_CAUSAL_LOG_RECIPIENT_V1.txt"
+    contract_path = root / "COHORT_CAUSAL_SEALED_LOG_RUNTIME_V1.json"
+    _require_inventory_paths(
+        inventory,
+        (recipient_path, contract_path),
+        label="sealed-log public runtime",
+    )
+    recipient_raw, _ = _read_stable_file(recipient_path)
+    recipient_sha256 = _sha256_bytes(recipient_raw)
+    contract, contract_raw = _load_strict_json_file(
+        contract_path, label="sealed-log runtime contract"
+    )
+    if not isinstance(contract, dict):
+        raise RevalidationError("sealed-log runtime contract is not an object")
+    age_binary_sha256 = contract.get("age_binary_sha256")
+    age_version = contract.get("age_version")
+    if (
+        not _is_sha256(age_binary_sha256)
+        or not isinstance(age_version, str)
+        or not age_version
+        or contract.get("recipient_sha256") != recipient_sha256
+        or contract.get("private_identity_on_experiment_host") is not False
+    ):
+        raise RevalidationError("sealed-log runtime contract fields differ")
+    contract_sha256 = _sha256_bytes(contract_raw)
+
+    expected_role_paths = {
+        "sealed_cell_log": set(),
+        "sealed_cell_log_receipt": set(),
+        "sealed_cell_log_start_receipt": set(),
+    }
+    seen: set[str] = set()
+    sealed_root = artifact_root / "sealed_logs" / "formal"
+    for section, rows in sections.items():
+        assert isinstance(rows, list)
+        for row in rows:
+            cfg_id = row.get("cfg_id") if isinstance(row, dict) else None
+            if (
+                not isinstance(cfg_id, str)
+                or _SEALED_CFG_ID_RE.fullmatch(cfg_id) is None
+                or cfg_id in seen
+            ):
+                raise RevalidationError("sealed-log cfg_id inventory differs")
+            seen.add(cfg_id)
+            ciphertext_path = sealed_root / f"{cfg_id}.stdout_stderr.age"
+            start_path = sealed_root / f"{cfg_id}.start.json"
+            finish_path = sealed_root / f"{cfg_id}.receipt.json"
+            expected_role_paths["sealed_cell_log"].add(_path_key(ciphertext_path))
+            expected_role_paths["sealed_cell_log_start_receipt"].add(
+                _path_key(start_path)
+            )
+            expected_role_paths["sealed_cell_log_receipt"].add(
+                _path_key(finish_path)
+            )
+            _require_inventory_paths(
+                inventory,
+                (ciphertext_path, start_path, finish_path),
+                label=f"sealed cell {cfg_id}",
+            )
+            start, start_raw = _load_strict_json_file(
+                start_path, label=f"sealed start receipt {cfg_id}"
+            )
+            finish, finish_raw = _load_strict_json_file(
+                finish_path, label=f"sealed finish receipt {cfg_id}"
+            )
+            if (
+                not isinstance(start, dict)
+                or set(start) != _SEALED_START_KEYS
+                or start_raw != _compact_file_bytes(start)
+                or not isinstance(finish, dict)
+                or set(finish) != _SEALED_FINISH_KEYS
+                or finish_raw != _compact_file_bytes(finish)
+            ):
+                raise RevalidationError("sealed receipt exact schema differs")
+            _validate_sealed_receipt_scalar_contract(
+                start, start=True, label=f"sealed start receipt {cfg_id}"
+            )
+            _validate_sealed_receipt_scalar_contract(
+                finish, start=False, label=f"sealed finish receipt {cfg_id}"
+            )
+            shared = _SEALED_START_KEYS - {"event", "published_at_utc"}
+            ciphertext_record = inventory[_path_key(ciphertext_path)]
+            if (
+                start["cfg_id"] != cfg_id
+                or finish["cfg_id"] != cfg_id
+                or start["phase"] != section
+                or finish["phase"] != section
+                or any(start[field] != finish[field] for field in shared)
+                or start["recipient_sha256"] != recipient_sha256
+                or start["age_binary_sha256"] != age_binary_sha256
+                or start["age_version"] != age_version
+                or start["runtime_contract_sha256"] != contract_sha256
+                or finish["start_receipt_sha256"] != _sha256_bytes(start_raw)
+                or finish["ciphertext_sha256"] != ciphertext_record["sha256"]
+                or finish["ciphertext_size_bytes"]
+                != ciphertext_record["size_bytes"]
+            ):
+                raise RevalidationError("sealed start/finish/ciphertext binding differs")
+            if not finish_raw:
+                raise AssertionError("strict finish receipt unexpectedly empty")
+
+    for role, expected_paths in expected_role_paths.items():
+        observed_paths = {
+            _path_key(Path(record["path"]))
+            for record in inventory.values()
+            if role in record["roles"]
+        }
+        if observed_paths != expected_paths:
+            raise RevalidationError(f"sealed-log role inventory differs for {role}")
+
+
 def _strict_scan_inventory_json(
     files: list[dict[str, Any]], *, deferred_paths: Iterable[Path] = ()
 ) -> None:
@@ -766,8 +984,11 @@ def _validate_launch_expectation(value: Any) -> dict[str, Any]:
         "collector_manifests": 3,
         "formal_decisions": 1,
         "formal_manifests": 1,
+        "sealed_cell_log_receipts": 9,
+        "sealed_cell_log_start_receipts": 9,
+        "sealed_cell_logs": 9,
         "tapes": 3,
-        "total": 23,
+        "total": 50,
     }:
         raise RevalidationError("launch expectation final inventory counts drifted")
     for key in (
@@ -1206,6 +1427,16 @@ def revalidate_terminal(
         formal_decision=formal_decision_path,
     )
 
+    outcome_blind_grid_object, outcome_blind_grid_raw = _load_strict_json_file(
+        grid_path, label="outcome-blind formal grid"
+    )
+    _validate_outcome_blind_sealed_logs(
+        root=root,
+        artifact_root=formal_decision_path.parent,
+        grid=outcome_blind_grid_object,
+        inventory=current_inventory,
+    )
+
     # Semantic opening starts only after the zero-exit and inventory gate.
     _strict_scan_inventory_json(
         attested_files,
@@ -1257,8 +1488,10 @@ def revalidate_terminal(
         if any(item is not None for item in (assemble_fn, evaluate_fn, make_grid_fn)):
             raise RevalidationError("registered runtime overrides must be supplied together")
         assemble_fn, evaluate_fn, make_grid_fn = _load_registered_runtime(root)
-    grid_object, grid_raw = _load_strict_json_file(grid_path, label="formal grid")
-    grid = _validate_registered_grid(grid_object, make_grid_fn=make_grid_fn)
+    grid_raw = outcome_blind_grid_raw
+    grid = _validate_registered_grid(
+        outcome_blind_grid_object, make_grid_fn=make_grid_fn
+    )
 
     launcher_path = (root / "launch_cohort_causal.sh").resolve()
     expected_launcher = attestation["expected_launcher"]
@@ -1389,7 +1622,13 @@ def revalidate_terminal(
 
     # Third recheck closes the reconstruction/publication window.  Only after
     # it passes may either no-overwrite output become visible.
-    _verify_current_inventory(attested_files)
+    final_inventory = _verify_current_inventory(attested_files)
+    _validate_outcome_blind_sealed_logs(
+        root=root,
+        artifact_root=formal_decision_path.parent,
+        grid=grid,
+        inventory=final_inventory,
+    )
     _publish_pair_no_overwrite(
         [
             (revalidated_output, original_decision_bytes),

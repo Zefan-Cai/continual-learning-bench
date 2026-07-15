@@ -121,6 +121,9 @@ REGISTERED_COUNTS_KEYS = frozenset(
         "collector_manifests",
         "formal_decisions",
         "formal_manifests",
+        "sealed_cell_log_receipts",
+        "sealed_cell_log_start_receipts",
+        "sealed_cell_logs",
         "tapes",
         "total",
     }
@@ -132,8 +135,11 @@ EXPECTED_REGISTERED_COUNTS = {
     "collector_manifests": 3,
     "formal_decisions": 1,
     "formal_manifests": 1,
+    "sealed_cell_log_receipts": 9,
+    "sealed_cell_log_start_receipts": 9,
+    "sealed_cell_logs": 9,
     "tapes": 3,
-    "total": 23,
+    "total": 50,
 }
 PID_EXIT_KEYS = frozenset(
     {
@@ -1272,6 +1278,9 @@ def _validate_role_inventory(
         "collector_final_trace": 3,
         "cell_manifest": 6,
         "cell_final_trace": 6,
+        "sealed_cell_log": 9,
+        "sealed_cell_log_receipt": 9,
+        "sealed_cell_log_start_receipt": 9,
     }
     for role, count in exact_counts.items():
         if len(_role_paths(files, role)) != count:

@@ -3,7 +3,8 @@
 
 The fence is outcome-blind: it checks only registered paths, regular-file
 metadata, exact bytes through SHA-256, and the absence of live/temporary files.
-It never parses or prints a model trace, tape, or cell result.
+Per-cell stdout/stderr is present only as age ciphertext. The fence never
+decrypts, parses, or prints a model trace, tape, cell result, or log.
 """
 
 from __future__ import annotations
@@ -60,6 +61,9 @@ def registered_paths(
     rows = grid.get(section)
     if not isinstance(rows, list) or not rows:
         raise PhaseVisibilityError(f"grid section is empty or invalid: {section}")
+    kind = grid.get("kind")
+    if kind not in {"smoke", "formal"}:
+        raise PhaseVisibilityError("grid kind is invalid")
     required: list[Path] = []
     forbidden: list[Path] = []
     for index, row in enumerate(rows):
@@ -67,7 +71,17 @@ def registered_paths(
             raise PhaseVisibilityError(f"invalid {section} row {index}")
         cfg_id = row["cfg_id"]
         trace_root = root / "artifacts" / "cohort_causal" / "traces"
+        sealed_root = (
+            root / "artifacts" / "cohort_causal" / "sealed_logs" / kind
+        )
         required.append(trace_root / f"{cfg_id}.trace.json")
+        required.extend(
+            [
+                sealed_root / f"{cfg_id}.stdout_stderr.age",
+                sealed_root / f"{cfg_id}.start.json",
+                sealed_root / f"{cfg_id}.receipt.json",
+            ]
+        )
         forbidden.append(trace_root / f"{cfg_id}.trace.live.json")
         if section == "collectors":
             required.extend(

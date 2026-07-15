@@ -1,0 +1,10 @@
+{
+  "age_archive_sha256": "bdc69c09cbdd6cf8b1f333d372a1f58247b3a33146406333e30c0f26e8f51377",
+  "age_archive_url": "https://github.com/FiloSottile/age/releases/download/v1.3.1/age-v1.3.1-linux-amd64.tar.gz",
+  "age_binary_sha256": "2e305637f2a0555305e21c17fb74446acbb39b53135d43d4b744e50c287133a5",
+  "age_version": "v1.3.1",
+  "private_identity_on_experiment_host": false,
+  "recipient_file": "COHORT_CAUSAL_LOG_RECIPIENT_V1.txt",
+  "recipient_sha256": "ce9e4b378ecf219147a9a7b9949adc58a319c08a0dee3f6b9d197f7c8f9c75b2",
+  "schema_version": 1
+}

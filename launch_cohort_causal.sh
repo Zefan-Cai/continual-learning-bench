@@ -60,8 +60,49 @@ if [[ -z "$PROVENANCE" || ! -f "$PROVENANCE" ]]; then
 fi
 PROVENANCE="$(cd "$(dirname "$PROVENANCE")" && pwd)/$(basename "$PROVENANCE")"
 GRID="$ROOT/grid_cohort_causal_${KIND}.json"
-LOG_DIR="$ROOT/artifacts/cohort_causal/logs"
-mkdir -p "$LOG_DIR"
+SEALED_DIR="$ROOT/artifacts/cohort_causal/sealed_logs/$KIND"
+SEALED_CELL_RUNNER="$ROOT/run_cohort_causal_cell_sealed.py"
+RECIPIENT_FILE="$ROOT/COHORT_CAUSAL_LOG_RECIPIENT_V1.txt"
+SEALED_RUNTIME_CONTRACT="$ROOT/COHORT_CAUSAL_SEALED_LOG_RUNTIME_V1.json"
+AGE_BINARY="${COHORT_CAUSAL_AGE_BINARY:-$(command -v age || true)}"
+mkdir -p "$SEALED_DIR"
+
+SOURCE_COMMIT="$(python - "$PROVENANCE" <<'PY'
+import json, sys
+value = json.load(open(sys.argv[1]))
+commit = value.get("source_commit")
+if not isinstance(commit, str) or len(commit) != 40:
+    raise SystemExit("provenance source commit is invalid")
+print(commit)
+PY
+)"
+RUNTIME_HOME_ROOT="${COHORT_CAUSAL_RUNTIME_HOME_ROOT:-/tmp/cohort-causal-runtime-home/$SOURCE_COMMIT/$KIND}"
+if [[ "$RUNTIME_HOME_ROOT" != /* || -e "$RUNTIME_HOME_ROOT" || -L "$RUNTIME_HOME_ROOT" ]]; then
+  echo "dedicated runtime-home root must be a fresh absolute path" >&2
+  exit 1
+fi
+mkdir -p "$(dirname "$RUNTIME_HOME_ROOT")"
+mkdir -m 700 "$RUNTIME_HOME_ROOT"
+
+ACTIVE_PIDS=()
+cleanup_active() {
+  local pid
+  for pid in "${ACTIVE_PIDS[@]}"; do
+    kill -TERM "$pid" 2>/dev/null || true
+  done
+  for pid in "${ACTIVE_PIDS[@]}"; do
+    wait "$pid" 2>/dev/null || true
+  done
+  ACTIVE_PIDS=()
+}
+on_signal() {
+  trap - HUP INT TERM
+  cleanup_active
+  echo "CAUSAL_LAUNCHER_INTERRUPTED" >&2
+  exit 143
+}
+trap cleanup_active EXIT
+trap on_signal HUP INT TERM
 
 IFS=',' read -r -a COLLECTOR_GPU_ARRAY <<< "$COLLECTOR_GPUS"
 IFS=',' read -r -a EVAL_GPU_ARRAY <<< "$EVAL_GPUS"
@@ -105,10 +146,12 @@ if [[ "$(printf '%s\n' "${EVAL_GPU_ARRAY[@]}" | sort -u | wc -l | tr -d ' ')" -n
 fi
 
 for cfg_id in "${COLLECTOR_IDS[@]}" "${EVAL_IDS[@]}"; do
-  if [[ -e "$LOG_DIR/${cfg_id}.log" ]]; then
-    echo "refusing existing log: $LOG_DIR/${cfg_id}.log" >&2
-    exit 1
-  fi
+  for suffix in stdout_stderr.age start.json receipt.json; do
+    if [[ -e "$SEALED_DIR/${cfg_id}.${suffix}" ]]; then
+      echo "refusing existing sealed cell artifact" >&2
+      exit 1
+    fi
+  done
 done
 if [[ "$KIND" == "formal" ]] && {
   [[ -e "$ROOT/artifacts/cohort_causal/formal_manifest.json" ]] ||
@@ -248,17 +291,26 @@ PY
 run_phase() {
   local ids_csv="$1"
   local gpus_csv="$2"
+  local phase="$3"
   local -a ids_ref gpus_ref
   IFS=',' read -r -a ids_ref <<< "$ids_csv"
   IFS=',' read -r -a gpus_ref <<< "$gpus_csv"
   # Query immediately before each phase; the prior snapshot may already be stale.
   check_gpus_idle "$gpus_csv"
-  local pids=()
-  local index cfg_id gpu log_path run_seed
+  if [[ ! -f "$SEALED_CELL_RUNNER" || ! -f "$RECIPIENT_FILE" || \
+        ! -f "$SEALED_RUNTIME_CONTRACT" || ! -x "$AGE_BINARY" ]]; then
+    echo "sealed-log runtime is unavailable" >&2
+    return 1
+  fi
+  local pids=() cfg_ids=()
+  local index cfg_id gpu ciphertext_path start_path receipt_path runtime_home run_seed pid
   for index in "${!ids_ref[@]}"; do
     cfg_id="${ids_ref[$index]}"
     gpu="${gpus_ref[$index]}"
-    log_path="$LOG_DIR/${cfg_id}.log"
+    ciphertext_path="$SEALED_DIR/${cfg_id}.stdout_stderr.age"
+    start_path="$SEALED_DIR/${cfg_id}.start.json"
+    receipt_path="$SEALED_DIR/${cfg_id}.receipt.json"
+    runtime_home="$RUNTIME_HOME_ROOT/$cfg_id"
     run_seed="$(python - "$GRID" "$cfg_id" <<'PY'
 import json, sys
 grid = json.load(open(sys.argv[1]))
@@ -271,34 +323,59 @@ if len(matches) != 1:
 print(matches[0]["run_seed"])
 PY
 )"
-    echo "launch cfg=$cfg_id CUDA_VISIBLE_DEVICES=$gpu log=$log_path"
+    echo "CELL_LAUNCH_REQUEST cfg=$cfg_id phase=$phase gpu=$gpu"
     (
       cd "$ROOT"
-      CUDA_VISIBLE_DEVICES="$gpu" \
-      PYTHONHASHSEED="$run_seed" \
-      CLBENCH_FAULT_TOLERANT=0 \
-      PYTHONUNBUFFERED=1 \
-      python run_cohort_causal.py \
-        --grid "$GRID" \
+      exec env \
+        CUDA_VISIBLE_DEVICES="$gpu" \
+        PYTHONHASHSEED="$run_seed" \
+        CLBENCH_FAULT_TOLERANT=0 \
+        PYTHONUNBUFFERED=1 \
+        COHORT_CAUSAL_AGE_BINARY="$AGE_BINARY" \
+        python "$SEALED_CELL_RUNNER" run \
+        --age-binary "$AGE_BINARY" \
+        --recipient-file "$RECIPIENT_FILE" \
+        --runtime-contract "$SEALED_RUNTIME_CONTRACT" \
+        --ciphertext "$ciphertext_path" \
+        --start-receipt "$start_path" \
+        --receipt "$receipt_path" \
+        --cwd "$ROOT" \
+        --runtime-home "$runtime_home" \
+        --kind "$KIND" \
+        --phase "$phase" \
         --cfg-id "$cfg_id" \
-        --provenance "$PROVENANCE"
-    ) >"$log_path" 2>&1 &
-    pids+=("$!")
+        -- \
+        python run_cohort_causal.py \
+          --grid "$GRID" \
+          --cfg-id "$cfg_id" \
+          --provenance "$PROVENANCE"
+    ) &
+    pid="$!"
+    echo "CELL_SUPERVISOR_STARTED cfg=$cfg_id pid=$pid"
+    pids+=("$pid")
+    cfg_ids+=("$cfg_id")
+    ACTIVE_PIDS+=("$pid")
   done
-  local failed=0 pid
-  for pid in "${pids[@]}"; do
-    if ! wait "$pid"; then
+  local failed=0 rc
+  for index in "${!pids[@]}"; do
+    pid="${pids[$index]}"
+    if wait "$pid"; then
+      rc=0
+    else
+      rc=$?
       failed=1
     fi
+    echo "CELL_SUPERVISOR_EXITED cfg=${cfg_ids[$index]} rc=$rc"
   done
+  ACTIVE_PIDS=()
   if [[ "$failed" -ne 0 ]]; then
-    echo "causal phase failed; inspect $LOG_DIR" >&2
+    echo "CAUSAL_PHASE_FAILED phase=$phase" >&2
     return 1
   fi
 }
 
 # Hard barrier: no replay cell starts until every collector tape has completed.
-run_phase "$COLLECTOR_IDS_CSV" "$COLLECTOR_GPUS"
+run_phase "$COLLECTOR_IDS_CSV" "$COLLECTOR_GPUS" collectors
 python "$ROOT/wait_cohort_causal_phase_outputs.py" \
   --root "$ROOT" \
   --grid "$GRID" \
@@ -306,7 +383,12 @@ python "$ROOT/wait_cohort_causal_phase_outputs.py" \
   --timeout-seconds 60 \
   --stability-seconds 1 \
   --poll-seconds 0.25
-run_phase "$EVAL_IDS_CSV" "$EVAL_GPUS"
+python "$SEALED_CELL_RUNNER" verify \
+  --root "$ROOT" \
+  --grid "$GRID" \
+  --section collectors \
+  --recipient-file "$RECIPIENT_FILE"
+run_phase "$EVAL_IDS_CSV" "$EVAL_GPUS" evaluation_cells
 python "$ROOT/wait_cohort_causal_phase_outputs.py" \
   --root "$ROOT" \
   --grid "$GRID" \
@@ -314,6 +396,11 @@ python "$ROOT/wait_cohort_causal_phase_outputs.py" \
   --timeout-seconds 60 \
   --stability-seconds 1 \
   --poll-seconds 0.25
+python "$SEALED_CELL_RUNNER" verify \
+  --root "$ROOT" \
+  --grid "$GRID" \
+  --section evaluation_cells \
+  --recipient-file "$RECIPIENT_FILE"
 
 if [[ "$KIND" == "formal" ]]; then
   FORMAL_MANIFEST="$ROOT/artifacts/cohort_causal/formal_manifest.json"

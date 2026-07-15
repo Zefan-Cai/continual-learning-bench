@@ -153,6 +153,27 @@ def completed_attempt(tmp_path: Path) -> dict[str, Any]:
                     artifact_root / "traces" / f"{cfg_id}.trace.json",
                     b"\x80collector-trace",
                 ),
+                _write(
+                    artifact_root
+                    / "sealed_logs"
+                    / "formal"
+                    / f"{cfg_id}.stdout_stderr.age",
+                    b"age-encrypted-collector-log",
+                ),
+                _write(
+                    artifact_root
+                    / "sealed_logs"
+                    / "formal"
+                    / f"{cfg_id}.receipt.json",
+                    b"opaque-sealed-collector-receipt",
+                ),
+                _write(
+                    artifact_root
+                    / "sealed_logs"
+                    / "formal"
+                    / f"{cfg_id}.start.json",
+                    b"opaque-sealed-collector-start-receipt",
+                ),
             ]
         )
     for index in range(6):
@@ -172,6 +193,27 @@ def completed_attempt(tmp_path: Path) -> dict[str, Any]:
                 _write(
                     artifact_root / "traces" / f"{cfg_id}.trace.json",
                     b"\x81cell-trace",
+                ),
+                _write(
+                    artifact_root
+                    / "sealed_logs"
+                    / "formal"
+                    / f"{cfg_id}.stdout_stderr.age",
+                    b"age-encrypted-cell-log",
+                ),
+                _write(
+                    artifact_root
+                    / "sealed_logs"
+                    / "formal"
+                    / f"{cfg_id}.receipt.json",
+                    b"opaque-sealed-cell-receipt",
+                ),
+                _write(
+                    artifact_root
+                    / "sealed_logs"
+                    / "formal"
+                    / f"{cfg_id}.start.json",
+                    b"opaque-sealed-cell-start-receipt",
                 ),
             ]
         )

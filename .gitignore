@@ -11,6 +11,7 @@ web_app/sessions/
 .env
 logs/
 .codex/
+.private/
 
 # Large data files — downloaded/built locally
 data/codebase_adaptation/dev/

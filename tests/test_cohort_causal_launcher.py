@@ -23,11 +23,15 @@ def _install_launcher(tmp_path: Path) -> tuple[Path, Path]:
         tmp_path / "grid_cohort_causal_formal.json",
     )
     provenance = tmp_path / "provenance.json"
-    provenance.write_text("{}")
+    provenance.write_text(json.dumps({"source_commit": "1" * 40}))
     return launcher, provenance
 
 
 def _run(launcher: Path, provenance: Path, *extra: str, env=None):
+    environment = dict(os.environ if env is None else env)
+    environment["COHORT_CAUSAL_RUNTIME_HOME_ROOT"] = str(
+        launcher.parent / ".runtime-smoke"
+    )
     return subprocess.run(
         [
             "bash",
@@ -39,11 +43,15 @@ def _run(launcher: Path, provenance: Path, *extra: str, env=None):
         ],
         capture_output=True,
         text=True,
-        env=env,
+        env=environment,
     )
 
 
 def _run_formal(launcher: Path, provenance: Path, *extra: str, env=None):
+    environment = dict(os.environ if env is None else env)
+    environment["COHORT_CAUSAL_RUNTIME_HOME_ROOT"] = str(
+        launcher.parent / ".runtime-formal"
+    )
     return subprocess.run(
         [
             "bash",
@@ -55,7 +63,7 @@ def _run_formal(launcher: Path, provenance: Path, *extra: str, env=None):
         ],
         capture_output=True,
         text=True,
-        env=env,
+        env=environment,
     )
 
 
@@ -180,3 +188,15 @@ def test_formal_launcher_accepts_bound_smoke_then_rechecks_gpus(tmp_path):
     )
     assert completed.returncode != 0
     assert "GPU 0 memory.used=2048 MiB" in completed.stderr
+
+
+def test_launcher_routes_cell_streams_only_through_sealed_supervisor() -> None:
+    text = (REPO_ROOT / "launch_cohort_causal.sh").read_text()
+    assert "run_cohort_causal_cell_sealed.py" in text
+    assert "stdout_stderr.age" in text
+    assert "CELL_LAUNCH_REQUEST" in text
+    assert "CELL_SUPERVISOR_EXITED" in text
+    assert ">\"$log_path\"" not in text
+    assert "tail " not in text
+    assert "inspect $LOG_DIR" not in text
+    assert "logs/${cfg_id}.log" not in text
