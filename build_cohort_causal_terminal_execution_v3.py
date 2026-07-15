@@ -1121,17 +1121,21 @@ def load_and_validate_execution_plan_stage(
     )
     if plan["invocations"] != expected_topology:
         raise CausalExecutionV3Error("V3 future invocation topology differs")
-    for stage, invocation in plan["invocations"].items():
+    for registered_stage, invocation in plan["invocations"].items():
         if set(invocation) != INVOCATION_KEYS:
-            raise CausalExecutionV3Error(f"V3 invocation schema differs: {stage}")
+            raise CausalExecutionV3Error(
+                f"V3 invocation schema differs: {registered_stage}"
+            )
         for group_name in ("inputs", "outputs"):
             group = invocation[group_name]
             if not isinstance(group, dict):
                 raise CausalExecutionV3Error(
-                    f"V3 invocation {group_name} differs: {stage}"
+                    f"V3 invocation {group_name} differs: {registered_stage}"
                 )
             for name, value in group.items():
-                artifact_path = _absolute(value, f"{stage} {group_name} {name}")
+                artifact_path = _absolute(
+                    value, f"{registered_stage} {group_name} {name}"
+                )
                 for fixed_root in (durable, causal):
                     try:
                         artifact_path.relative_to(fixed_root)
@@ -1140,12 +1144,13 @@ def load_and_validate_execution_plan_stage(
                     _assert_no_symlink_descendant(
                         artifact_path,
                         root=fixed_root,
-                        label=f"{stage} {group_name} {name}",
+                        label=f"{registered_stage} {group_name} {name}",
                     )
                     break
                 else:
                     raise CausalExecutionV3Error(
-                        f"V3 invocation path escapes fixed roots: {stage}.{name}"
+                        "V3 invocation path escapes fixed roots: "
+                        f"{registered_stage}.{name}"
                     )
     transport = plan["detached_transport"]
     launcher, handoff, claim, receipt = _transport_paths(

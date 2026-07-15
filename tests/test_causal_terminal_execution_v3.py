@@ -59,6 +59,235 @@ def test_v3_contract_and_fixed_schema_are_canonical() -> None:
     assert execution.DETACHED_RECEIPT_FILENAME.endswith("_V3_DETACHED_RECEIPT.json")
 
 
+def _mock_stage_validation_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, dict]:
+    causal = tmp_path / "causal"
+    durable = tmp_path / "attempt-002"
+    control = durable / "control"
+    tooling = control / "verifier" / ("1" * 40)
+    plan_path = control / execution.PLAN_FILENAME
+    base_plan_path = control / execution.v2.PLAN_FILENAME
+    base_receipt_path = control / execution.v2.DETACHED_RECEIPT_FILENAME
+    base_inventory_path = control / execution.v2.EXCEPTION_INVENTORY_FILENAME
+    closure_path = control / execution.FAILURE_CLOSURE_FILENAME
+    fence_path = control / execution.COMPLETION_FENCE_FILENAME
+    launcher_path = tmp_path / "transport" / "launcher.py"
+    handoff_path = tmp_path / "transport" / execution.DETACHED_HANDOFF_FILENAME
+    claim_path = control / execution.LAUNCH_CLAIM_FILENAME
+    receipt_path = control / execution.DETACHED_RECEIPT_FILENAME
+
+    invocations = {
+        stage: {
+            "argv": [
+                execution.EXPECTED_PYTHON_PATH,
+                (tooling / execution.TOOL_FILENAMES[stage]).as_posix(),
+                f"--{stage}",
+            ],
+            "inputs": {
+                "registered_input": (
+                    durable / "registered" / stage / "input.json"
+                ).as_posix()
+            },
+            "outputs": {
+                "registered_output": (
+                    durable / "registered" / stage / "output.json"
+                ).as_posix()
+            },
+            "parameters": {"registered_stage": stage},
+        }
+        for stage in ("attester", "execution_seal_builder", "revalidator")
+    }
+    base_plan = {
+        "causal_checkout_root": causal.as_posix(),
+        "durable_attempt_root": durable.as_posix(),
+        "invocations": {
+            "revalidator": {
+                "inputs": {
+                    "grid": (causal / "grid.json").as_posix(),
+                    "preregistration": (causal / "preregistration.md").as_posix(),
+                    "statistical_addendum": (causal / "addendum.md").as_posix(),
+                }
+            }
+        },
+    }
+
+    def fake_binding(path: Path, _label: str) -> dict[str, str]:
+        return {"path": path.as_posix(), "sha256": "a" * 64}
+
+    science_inputs = base_plan["invocations"]["revalidator"]["inputs"]
+    plan = {
+        "attempt_id": "attempt-002",
+        "base_v2": {
+            "execution_plan": fake_binding(base_plan_path, "base plan"),
+            "detached_receipt": fake_binding(base_receipt_path, "base receipt"),
+            "procfs_exception_inventory": fake_binding(
+                base_inventory_path, "base inventory"
+            ),
+        },
+        "branch_adapter_contracts": {},
+        "causal_checkout_root": causal.as_posix(),
+        "created_at_utc": "2026-07-15T00:00:00Z",
+        "detached_transport": {
+            "handoff": fake_binding(handoff_path, "handoff"),
+            "launch_claim_path": claim_path.as_posix(),
+            "launcher": fake_binding(launcher_path, "launcher"),
+            "receipt_path": receipt_path.as_posix(),
+        },
+        "durable_attempt_root": durable.as_posix(),
+        "implementation_dependencies": {
+            name: fake_binding(tooling / filename, name)
+            for name, filename in execution.DEPENDENCY_FILENAMES.items()
+        },
+        "invocations": invocations,
+        "public_truth": {
+            "completion_method": "post-wrapper-death two-snapshot fence",
+            "historical_exit_order_claimed": False,
+            "legacy_strict_mtime_proof": False,
+            "mtime_relation": (
+                "formal_manifest_before_formal_decision_equal_wrapper_exit"
+            ),
+        },
+        "recovery_controls": {
+            "v2_failure_closure": fake_binding(closure_path, "closure"),
+            "v3_completion_fence": fake_binding(fence_path, "fence"),
+        },
+        "runtime": {
+            "python_path": execution.EXPECTED_PYTHON_PATH,
+            "python_version": execution.EXPECTED_PYTHON_VERSION,
+        },
+        "science_invariants": {
+            "base_v2_invocations_sha256": execution.canonical_sha256(
+                base_plan["invocations"]
+            ),
+            "changed": False,
+            "estimator_and_thresholds_changed": False,
+            **{
+                name: fake_binding(Path(science_inputs[name]), name)
+                for name in ("grid", "preregistration", "statistical_addendum")
+            },
+        },
+        "structured_preregistration": fake_binding(
+            tooling / execution.STRUCTURED_PREREGISTRATION_FILENAME,
+            "structured preregistration",
+        ),
+        "tooling_root": tooling.as_posix(),
+        "tooling_source_commit": "1" * 40,
+        "tools": {
+            name: fake_binding(tooling / filename, name)
+            for name, filename in execution.TOOL_FILENAMES.items()
+        },
+        "amendment": fake_binding(tooling / execution.AMENDMENT_FILENAME, "amendment"),
+    }
+    base_raw = {
+        base_plan_path: b"base-plan",
+        base_receipt_path: b"base-receipt",
+        base_inventory_path: b"base-inventory",
+        closure_path: b"closure",
+        fence_path: b"fence",
+        handoff_path: b"handoff",
+    }
+    base_controls = {
+        "base_v2_execution_plan": base_plan,
+        "base_v2_execution_plan_raw": base_raw[base_plan_path],
+        "base_v2_detached_receipt_raw": base_raw[base_receipt_path],
+        "base_v2_procfs_exception_inventory_raw": base_raw[base_inventory_path],
+    }
+    recovery_controls = {
+        "closure": {},
+        "closure_raw": base_raw[closure_path],
+        "fence": {},
+        "fence_raw": base_raw[fence_path],
+    }
+    handoff = {"registered": True}
+
+    monkeypatch.setattr(execution, "_load_plan_document", lambda _path: (plan, b"plan"))
+    monkeypatch.setattr(
+        execution, "_load_base_v2_controls", lambda **_kwargs: base_controls
+    )
+    monkeypatch.setattr(
+        execution, "_load_recovery_controls", lambda **_kwargs: recovery_controls
+    )
+    monkeypatch.setattr(execution, "_binding", fake_binding)
+    monkeypatch.setattr(
+        execution,
+        "_validate_binding",
+        lambda _value, *, expected_path, label: (
+            expected_path,
+            base_raw.get(expected_path, b"binding"),
+        ),
+    )
+    monkeypatch.setattr(
+        execution, "_validate_recovery_authority_bindings", lambda **_: None
+    )
+    monkeypatch.setattr(execution, "_branch_adapter_contracts", lambda **_: {})
+    monkeypatch.setattr(
+        execution, "_fixed_topology", lambda **_: copy.deepcopy(invocations)
+    )
+    monkeypatch.setattr(
+        execution,
+        "_transport_paths",
+        lambda _commit, _durable: (
+            launcher_path,
+            handoff_path,
+            claim_path,
+            receipt_path,
+        ),
+    )
+    monkeypatch.setattr(execution, "_strict_json", lambda _raw, _label: handoff)
+    monkeypatch.setattr(execution, "make_detached_handoff", lambda **_: handoff)
+    monkeypatch.setattr(
+        execution, "_assert_no_symlink_descendant", lambda *_, **__: None
+    )
+    monkeypatch.setattr(execution, "_assert_durable_plan_bound_paths", lambda **_: None)
+    return plan_path, plan
+
+
+@pytest.mark.parametrize(
+    ("stage", "mismatched_stage"),
+    [
+        ("attester", "revalidator"),
+        ("revalidator", "execution_seal_builder"),
+        ("execution_seal_builder", "attester"),
+    ],
+)
+def test_requested_v3_stage_validates_only_its_registered_topology(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+    mismatched_stage: str,
+) -> None:
+    plan_path, plan = _mock_stage_validation_plan(tmp_path, monkeypatch)
+    registered = plan["invocations"][stage]
+    loaded, raw = execution.load_and_validate_execution_plan_stage(
+        execution_plan_path=plan_path,
+        stage=stage,
+        expected_inputs=registered["inputs"],
+        expected_outputs=registered["outputs"],
+        expected_parameters=registered["parameters"],
+        actual_argv=registered["argv"],
+        runtime_python_path=execution.EXPECTED_PYTHON_PATH,
+        runtime_python_version=execution.EXPECTED_PYTHON_VERSION,
+    )
+    assert loaded is plan
+    assert raw == b"plan"
+
+    mismatch = plan["invocations"][mismatched_stage]
+    with pytest.raises(
+        execution.CausalExecutionV3Error, match="actual V3 stage topology differs"
+    ):
+        execution.load_and_validate_execution_plan_stage(
+            execution_plan_path=plan_path,
+            stage=stage,
+            expected_inputs=mismatch["inputs"],
+            expected_outputs=mismatch["outputs"],
+            expected_parameters=mismatch["parameters"],
+            actual_argv=registered["argv"],
+            runtime_python_path=execution.EXPECTED_PYTHON_PATH,
+            runtime_python_version=execution.EXPECTED_PYTHON_VERSION,
+        )
+
+
 def test_binding_rejects_byte_drift_and_symlink(tmp_path: Path) -> None:
     fixed = tmp_path / "fixed.json"
     fixed.write_bytes(b"{}")
