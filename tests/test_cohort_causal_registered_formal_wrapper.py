@@ -27,18 +27,30 @@ def _linux_boot_id(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(result_validator, "PUBLISHED_STABILITY_SECONDS", 0.0)
 
 
-def test_retry_004_protocol_identity_is_literal() -> None:
-    assert wrapper.RETRY_ID == "causal-retry-004"
+def test_retry_005_protocol_identity_is_literal() -> None:
+    assert wrapper.RETRY_ID == "causal-retry-005"
     assert wrapper.ATTEMPT_ID == "attempt-002"
+    assert wrapper.RETRY_BASE_COMMIT == "a3e887fc73860b1ce4a71476d7e2c6618ad20074"
+    assert wrapper.RETRY_SOURCE_DIFF_PATHS == (
+        "COHORT_QONLY_CAUSAL_SCHEMA_RETRY_AMENDMENT_V5.md",
+        "build_cohort_causal_provenance.py",
+        "run_cohort_causal_formal_registered.py",
+        "tests/test_cohort_causal_provenance.py",
+        "tests/test_cohort_causal_registered_formal_wrapper.py",
+        "tests/test_cohort_causal_results.py",
+        "validate_cohort_causal_results.py",
+    )
     assert wrapper.CLOSED_SOURCE_COMMITS == {
         "1caf142f6ce611da8da8691d4c336388a4c3c4b3",
         "059b26b45180b5a295c4c1b36a180cb2a91d5405",
         "6e0a638a7d0700d6df0b75f4c99ced9fae0f1324",
         "dd834d040e94cb0da4cf53486954935754787b84",
+        "fd9ab294a939350ee5f174acbab0ad279e33ee1e",
+        "a3e887fc73860b1ce4a71476d7e2c6618ad20074",
     }
     assert (
         wrapper.RETRY_AMENDMENT_FILENAME
-        == "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V4.md"
+        == "COHORT_QONLY_CAUSAL_SCHEMA_RETRY_AMENDMENT_V5.md"
     )
     assert wrapper.RETRY_AMENDMENT_FILENAME in wrapper.CRITICAL_TRACKED_FILES
     assert "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V1.md" in (
@@ -50,8 +62,59 @@ def test_retry_004_protocol_identity_is_literal() -> None:
     assert "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V3.md" in (
         wrapper.CRITICAL_TRACKED_FILES
     )
+    assert "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V4.md" in (
+        wrapper.CRITICAL_TRACKED_FILES
+    )
     assert "run_cohort_causal_cell_sealed.py" in wrapper.CRITICAL_TRACKED_FILES
     assert "wait_cohort_causal_phase_outputs.py" in wrapper.CRITICAL_TRACKED_FILES
+
+
+def test_retry_source_boundary_accepts_only_registered_parent_and_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commit = "b" * 40
+    expected = {
+        ("show", "-s", "--format=%P", commit): wrapper.RETRY_BASE_COMMIT,
+        (
+            "diff",
+            "--name-only",
+            "--no-renames",
+            f"{wrapper.RETRY_BASE_COMMIT}..{commit}",
+        ): "\n".join(wrapper.RETRY_SOURCE_DIFF_PATHS),
+    }
+
+    def git_output(_checkout: Path, *args: str) -> str:
+        return expected[args]
+
+    monkeypatch.setattr(wrapper, "_git_output", git_output)
+    wrapper._validate_retry_source_boundary(tmp_path, commit)
+
+
+def test_retry_source_boundary_rejects_wrong_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        wrapper,
+        "_git_output",
+        lambda _checkout, *_args: "c" * 40,
+    )
+    with pytest.raises(wrapper.RegisteredFormalError, match="sole parent"):
+        wrapper._validate_retry_source_boundary(tmp_path, "b" * 40)
+
+
+def test_retry_source_boundary_rejects_one_extra_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commit = "b" * 40
+
+    def git_output(_checkout: Path, *args: str) -> str:
+        if args[0] == "show":
+            return wrapper.RETRY_BASE_COMMIT
+        return "\n".join((*wrapper.RETRY_SOURCE_DIFF_PATHS, "unexpected.py"))
+
+    monkeypatch.setattr(wrapper, "_git_output", git_output)
+    with pytest.raises(wrapper.RegisteredFormalError, match="path inventory"):
+        wrapper._validate_retry_source_boundary(tmp_path, commit)
 
 
 def _write(path: Path, payload: bytes = b"x") -> Path:
@@ -91,7 +154,9 @@ def test_real_handoff_round_trip_binds_fresh_commit_scoped_roots(
 ) -> None:
     staging = tmp_path / "staging"
     staging.mkdir()
-    for filename in wrapper.CRITICAL_TRACKED_FILES:
+    for filename in sorted(
+        set(wrapper.CRITICAL_TRACKED_FILES) | set(wrapper.RETRY_SOURCE_DIFF_PATHS)
+    ):
         _write(
             staging / filename, (Path(wrapper.__file__).parent / filename).read_bytes()
         )
@@ -100,6 +165,13 @@ def test_real_handoff_round_trip_binds_fresh_commit_scoped_roots(
     _git(staging, "config", "user.name", "Test")
     _git(staging, "config", "user.email", "test@example.com")
     _git(staging, "add", ".")
+    _git(staging, "commit", "-qm", "registered retry base")
+    base_commit = _git(staging, "rev-parse", "HEAD")
+    monkeypatch.setattr(wrapper, "RETRY_BASE_COMMIT", base_commit)
+    for filename in wrapper.RETRY_SOURCE_DIFF_PATHS:
+        path = staging / filename
+        path.write_bytes(path.read_bytes() + b"\n")
+    _git(staging, "add", *wrapper.RETRY_SOURCE_DIFF_PATHS)
     _git(staging, "commit", "-qm", "fresh retry")
     commit = _git(staging, "rev-parse", "HEAD")
 

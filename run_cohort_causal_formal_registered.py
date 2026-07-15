@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prospective, outcome-blind formal wrapper for causal-retry-004.
+"""Prospective, outcome-blind formal wrapper for causal-retry-005.
 
 The wrapper registers its process identity and launch expectation before any
 model call, then waits for a no-overwrite authorization binding the complete
@@ -29,17 +29,29 @@ from types import ModuleType
 from typing import Any, Callable, Mapping, Sequence
 
 
-RETRY_ID = "causal-retry-004"
+RETRY_ID = "causal-retry-005"
 ATTEMPT_ID = "attempt-002"
+RETRY_BASE_COMMIT = "a3e887fc73860b1ce4a71476d7e2c6618ad20074"
+RETRY_SOURCE_DIFF_PATHS = (
+    "COHORT_QONLY_CAUSAL_SCHEMA_RETRY_AMENDMENT_V5.md",
+    "build_cohort_causal_provenance.py",
+    "run_cohort_causal_formal_registered.py",
+    "tests/test_cohort_causal_provenance.py",
+    "tests/test_cohort_causal_registered_formal_wrapper.py",
+    "tests/test_cohort_causal_results.py",
+    "validate_cohort_causal_results.py",
+)
 CLOSED_SOURCE_COMMITS = frozenset(
     {
         "1caf142f6ce611da8da8691d4c336388a4c3c4b3",
         "059b26b45180b5a295c4c1b36a180cb2a91d5405",
         "6e0a638a7d0700d6df0b75f4c99ced9fae0f1324",
         "dd834d040e94cb0da4cf53486954935754787b84",
+        "fd9ab294a939350ee5f174acbab0ad279e33ee1e",
+        "a3e887fc73860b1ce4a71476d7e2c6618ad20074",
     }
 )
-RETRY_AMENDMENT_FILENAME = "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V4.md"
+RETRY_AMENDMENT_FILENAME = "COHORT_QONLY_CAUSAL_SCHEMA_RETRY_AMENDMENT_V5.md"
 CHECKOUT_BASE = Path("/mnt/localssd/ttt-rl-cohort-causal")
 DURABLE_BASE = Path("/sensei-fs/users/zcai/TTT-RL/cohort-qonly-causal")
 REQUIRE_PUSHED_REMOTE_REF = True
@@ -88,6 +100,7 @@ CRITICAL_TRACKED_FILES = (
     "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V1.md",
     "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V2.md",
     "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V3.md",
+    "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V4.md",
     RETRY_AMENDMENT_FILENAME,
     "COHORT_CAUSAL_LOG_RECIPIENT_V1.txt",
     "COHORT_CAUSAL_SEALED_LOG_RUNTIME_V1.json",
@@ -707,6 +720,27 @@ def _remote_refs_containing(checkout: Path, commit: str) -> list[str]:
     return refs
 
 
+def _validate_retry_source_boundary(checkout: Path, commit: str) -> None:
+    parents = _git_output(checkout, "show", "-s", "--format=%P", commit).split()
+    if parents != [RETRY_BASE_COMMIT]:
+        raise RegisteredFormalError(
+            "retry source commit must have the registered base as its sole parent"
+        )
+    changed_paths = tuple(
+        line
+        for line in _git_output(
+            checkout,
+            "diff",
+            "--name-only",
+            "--no-renames",
+            f"{RETRY_BASE_COMMIT}..{commit}",
+        ).splitlines()
+        if line
+    )
+    if changed_paths != RETRY_SOURCE_DIFF_PATHS:
+        raise RegisteredFormalError("retry source diff path inventory differs")
+
+
 def _validate_clean_tracked_checkout(
     checkout: Path, commit: str, *, expected_remote_refs: Sequence[str] | None = None
 ) -> tuple[str, list[str]]:
@@ -714,6 +748,7 @@ def _validate_clean_tracked_checkout(
         raise RegisteredFormalError("checkout is not the git toplevel")
     if _git_output(checkout, "rev-parse", "HEAD") != commit:
         raise RegisteredFormalError("checkout HEAD differs from source commit")
+    _validate_retry_source_boundary(checkout, commit)
     status = _git_bytes(
         checkout,
         "status",

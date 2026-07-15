@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import shutil
@@ -57,6 +58,113 @@ _TERMINAL_PROMPT = (
 
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def test_terminal_response_metadata_schema_matches_production_exactly() -> None:
+    """Keep the independent formal schema aligned with the production response."""
+
+    expected_production_keys = {
+        "adaptation_context_policy",
+        "adaptation_count",
+        "context_policy",
+        "generation_calls",
+        "generation_input_tokens_total",
+        "generation_max_new_tokens",
+        "generation_output_tokens_total",
+        "generation_prompt_hard_truncations",
+        "has_truncated",
+        "icl_context_sealed_eval",
+        "interaction_count",
+        "last_adaptation_loss",
+        "last_feedback_reward",
+        "last_reward_advantage",
+        "last_reward_clipped_advantage",
+        "last_reward_judge_usage",
+        "last_reward_pg_loss",
+        "lora_param_norm_clip",
+        "method",
+        "model_path",
+        "output_tokens",
+        "parse_repair_used",
+        "parse_retries_used",
+        "prompt_hard_truncated",
+        "prompt_token_budget",
+        "prompt_tokens",
+        "prompt_tokens_before_hard_cap",
+        "reward_feedback_source",
+        "reward_judge_model",
+        "reward_judge_provider",
+        "reward_pg_negative_updates",
+        "reward_pg_positive_updates",
+        "reward_pg_updates",
+        "reward_ppo_clip",
+        "reward_update_rule",
+        "reward_update_terminal",
+        "system_type",
+        "truncation_count",
+        "ttt_history_truncation_count",
+        "ttt_rl_source",
+        "usage",
+    }
+    system_tree = ast.parse((ROOT / "src/systems/qwen_local/system.py").read_text())
+    qwen_classes = [
+        node
+        for node in system_tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "QwenLocalSystem"
+    ]
+    assert len(qwen_classes) == 1
+    respond_functions = [
+        node
+        for node in qwen_classes[0].body
+        if isinstance(node, ast.FunctionDef) and node.name == "respond"
+    ]
+    assert len(respond_functions) == 1
+    response_metadata_dicts = [
+        keyword.value
+        for node in ast.walk(respond_functions[0])
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "Response"
+        for keyword in node.keywords
+        if keyword.arg == "metadata" and isinstance(keyword.value, ast.Dict)
+    ]
+    assert len(response_metadata_dicts) == 1
+    producer_literal_keys = {
+        key.value
+        for key in response_metadata_dicts[0].keys
+        if isinstance(key, ast.Constant) and isinstance(key.value, str)
+    }
+
+    runner_tree = ast.parse((ROOT / "src/runtime/runner.py").read_text())
+    run_task_functions = [
+        node
+        for node in runner_tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "run_task"
+    ]
+    assert len(run_task_functions) == 1
+    runner_injection_targets = [
+        target
+        for node in ast.walk(run_task_functions[0])
+        if isinstance(node, (ast.Assign, ast.AnnAssign))
+        for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+        if isinstance(target, ast.Subscript)
+        and isinstance(target.value, ast.Name)
+        and target.value.id == "response_metadata"
+    ]
+    assert len(runner_injection_targets) == 1
+    injection_slice = runner_injection_targets[0].slice
+    assert isinstance(injection_slice, ast.Constant)
+    assert isinstance(injection_slice.value, str)
+    runner_injected_keys = [injection_slice.value]
+    assert runner_injected_keys == ["usage"]
+    production_keys_after_runner_usage = producer_literal_keys | set(
+        runner_injected_keys
+    )
+
+    assert len(producer_literal_keys) == 40
+    assert len(production_keys_after_runner_usage) == 41
+    assert production_keys_after_runner_usage == expected_production_keys
+    assert _TERMINAL_RESPONSE_METADATA_KEYS == expected_production_keys
 
 
 def _copy_checked_in_corpus(tmp_path: Path, role: str) -> Path:
