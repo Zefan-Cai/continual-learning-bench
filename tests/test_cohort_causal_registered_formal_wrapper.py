@@ -27,23 +27,27 @@ def _linux_boot_id(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(result_validator, "PUBLISHED_STABILITY_SECONDS", 0.0)
 
 
-def test_retry_003_protocol_identity_is_literal() -> None:
-    assert wrapper.RETRY_ID == "causal-retry-003"
+def test_retry_004_protocol_identity_is_literal() -> None:
+    assert wrapper.RETRY_ID == "causal-retry-004"
     assert wrapper.ATTEMPT_ID == "attempt-002"
     assert wrapper.CLOSED_SOURCE_COMMITS == {
         "1caf142f6ce611da8da8691d4c336388a4c3c4b3",
         "059b26b45180b5a295c4c1b36a180cb2a91d5405",
         "6e0a638a7d0700d6df0b75f4c99ced9fae0f1324",
+        "dd834d040e94cb0da4cf53486954935754787b84",
     }
     assert (
         wrapper.RETRY_AMENDMENT_FILENAME
-        == "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V3.md"
+        == "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V4.md"
     )
     assert wrapper.RETRY_AMENDMENT_FILENAME in wrapper.CRITICAL_TRACKED_FILES
     assert "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V1.md" in (
         wrapper.CRITICAL_TRACKED_FILES
     )
     assert "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V2.md" in (
+        wrapper.CRITICAL_TRACKED_FILES
+    )
+    assert "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V3.md" in (
         wrapper.CRITICAL_TRACKED_FILES
     )
     assert "run_cohort_causal_cell_sealed.py" in wrapper.CRITICAL_TRACKED_FILES

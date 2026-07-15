@@ -218,6 +218,33 @@ def test_ciphertext_tamper_and_overwrite_fail_closed(
         )
 
 
+def test_publication_waits_through_transient_hardlink_nlink_visibility(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_snapshot = sealed._safe_regular_snapshot
+    target = tmp_path / "published.json"
+    failures_remaining = 2
+    target_calls = 0
+
+    def delayed_snapshot(path: Path) -> tuple[object, ...]:
+        nonlocal failures_remaining, target_calls
+        if path == target:
+            target_calls += 1
+            if failures_remaining:
+                failures_remaining -= 1
+                raise sealed.SealedCellError("sealed_artifact_identity_invalid")
+        return real_snapshot(path)
+
+    monkeypatch.setattr(sealed, "_safe_regular_snapshot", delayed_snapshot)
+    payload = b'{"fixed":"liveness"}\n'
+
+    snapshot = sealed._publish_bytes(target, payload)
+
+    assert target.read_bytes() == payload
+    assert snapshot[-1] == hashlib.sha256(payload).hexdigest()
+    assert target_calls >= 3
+
+
 def test_private_identity_environment_and_runtime_tamper_fail_before_launch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

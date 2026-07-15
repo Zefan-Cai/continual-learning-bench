@@ -272,7 +272,28 @@ def _safe_regular_snapshot(path: Path) -> tuple[Any, ...]:
     return (*_stat_identity(after), digest.hexdigest())
 
 
-def _wait_stable(path: Path, *, expected: tuple[Any, ...]) -> None:
+def _publication_identity_from_stat(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_size,
+        value.st_mtime_ns,
+    )
+
+
+def _publication_identity_from_snapshot(value: tuple[Any, ...]) -> tuple[int, ...]:
+    return (value[0], value[1], value[2], value[4], value[5])
+
+
+def _wait_published_snapshot(
+    path: Path,
+    *,
+    source_identity: tuple[int, ...],
+    expected_sha256: str | None = None,
+) -> tuple[Any, ...]:
+    """Wait through delayed hard-link metadata while binding the source inode."""
+
     deadline = time.monotonic() + PUBLISHED_VISIBILITY_TIMEOUT_SECONDS
     previous: tuple[Any, ...] | None = None
     previous_at = 0.0
@@ -283,10 +304,14 @@ def _wait_stable(path: Path, *, expected: tuple[Any, ...]) -> None:
             previous = None
         else:
             now = time.monotonic()
-            if current != expected:
+            if (
+                _publication_identity_from_snapshot(current) != source_identity
+                or expected_sha256 is not None
+                and current[-1] != expected_sha256
+            ):
                 raise SealedCellError("sealed_artifact_changed_after_publication")
             if previous == current and now - previous_at >= PUBLISHED_STABILITY_SECONDS:
-                return
+                return current
             if previous != current:
                 previous = current
                 previous_at = now
@@ -310,15 +335,26 @@ def _publish_bytes(path: Path, payload: bytes) -> tuple[Any, ...]:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
+        source_metadata = temporary.lstat()
+        if (
+            temporary.is_symlink()
+            or not stat.S_ISREG(source_metadata.st_mode)
+            or source_metadata.st_nlink != 1
+            or source_metadata.st_size != len(payload)
+        ):
+            raise SealedCellError("sealed_artifact_temporary_identity_invalid")
+        source_identity = _publication_identity_from_stat(source_metadata)
         os.link(temporary, path, follow_symlinks=False)
         linked = True
     finally:
         if linked:
             temporary.unlink()
             _fsync_directory(path.parent)
-    snapshot = _safe_regular_snapshot(path)
-    _wait_stable(path, expected=snapshot)
-    return snapshot
+    return _wait_published_snapshot(
+        path,
+        source_identity=source_identity,
+        expected_sha256=_sha256(payload),
+    )
 
 
 def _publish_existing(path: Path, temporary: Path) -> tuple[Any, ...]:
@@ -333,12 +369,11 @@ def _publish_existing(path: Path, temporary: Path) -> tuple[Any, ...]:
     ):
         raise SealedCellError("ciphertext_temporary_identity_invalid")
     _fsync_file(temporary)
+    source_identity = _publication_identity_from_stat(metadata)
     os.link(temporary, path, follow_symlinks=False)
     temporary.unlink()
     _fsync_directory(path.parent)
-    snapshot = _safe_regular_snapshot(path)
-    _wait_stable(path, expected=snapshot)
-    return snapshot
+    return _wait_published_snapshot(path, source_identity=source_identity)
 
 
 def _load_runtime_contract(path: Path) -> tuple[dict[str, Any], bytes]:
