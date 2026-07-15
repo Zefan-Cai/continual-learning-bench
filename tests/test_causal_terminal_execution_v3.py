@@ -110,6 +110,90 @@ def test_transitive_dependency_byte_drift_fails_closed(tmp_path: Path) -> None:
         )
 
 
+def _recovery_authority_fixture(tmp_path: Path) -> tuple[dict, dict]:
+    freezer = tmp_path / "freeze_cohort_causal_terminal_recovery_v3.py"
+    freezer.write_text("registered recovery freezer")
+    registered = _binding(freezer)
+    closure_path = tmp_path / execution.FAILURE_CLOSURE_FILENAME
+    closure_path.write_text("closure")
+    closure_binding = _binding(closure_path)
+    wrapper = {"pid": 101, "start_ticks": 202}
+    incident = {
+        "completion_method": "post-wrapper-death two-snapshot fence",
+        "legacy_strict_mtime_proof": False,
+    }
+    plan = {
+        "implementation_dependencies": {"recovery_freezer": registered},
+        "recovery_controls": {"v2_failure_closure": closure_binding},
+    }
+    controls = {
+        "closure": {
+            "incident": copy.deepcopy(incident),
+            "recovery_freezer": copy.deepcopy(registered),
+            "wrapper": copy.deepcopy(wrapper),
+        },
+        "fence": {
+            "failure_closure": copy.deepcopy(closure_binding),
+            "incident": copy.deepcopy(incident),
+            "recovery_freezer": copy.deepcopy(registered),
+            "wrapper": copy.deepcopy(wrapper),
+        },
+    }
+    return plan, controls
+
+
+def test_recovery_source_substitution_with_rehashed_forgery_fails(
+    tmp_path: Path,
+) -> None:
+    plan, controls = _recovery_authority_fixture(tmp_path)
+    execution._validate_recovery_authority_bindings(plan=plan, controls=controls)
+    forged = tmp_path / "forged_recovery_freezer.py"
+    forged.write_text("different but self-consistently rehashed source")
+    forged_binding = _binding(forged)
+    controls["closure"]["recovery_freezer"] = copy.deepcopy(forged_binding)
+    controls["fence"]["recovery_freezer"] = copy.deepcopy(forged_binding)
+    with pytest.raises(execution.CausalExecutionV3Error, match="recovery freezer"):
+        execution._validate_recovery_authority_bindings(plan=plan, controls=controls)
+
+
+@pytest.mark.parametrize("field", ["wrapper", "incident"])
+def test_closure_fence_authority_mismatch_fails(tmp_path: Path, field: str) -> None:
+    plan, controls = _recovery_authority_fixture(tmp_path)
+    controls["fence"][field]["unexpected_drift"] = True
+    with pytest.raises(execution.CausalExecutionV3Error, match=field):
+        execution._validate_recovery_authority_bindings(plan=plan, controls=controls)
+
+
+def test_fence_must_bind_exact_plan_failure_closure(tmp_path: Path) -> None:
+    plan, controls = _recovery_authority_fixture(tmp_path)
+    controls["fence"]["failure_closure"] = {
+        "path": (tmp_path / "substitute.json").as_posix(),
+        "sha256": "f" * 64,
+    }
+    with pytest.raises(execution.CausalExecutionV3Error, match="failure-closure"):
+        execution._validate_recovery_authority_bindings(plan=plan, controls=controls)
+
+
+def test_stable_read_rejects_post_fd_pathname_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "bound-control.json"
+    target.write_bytes(b"{}")
+    real_lstat = execution.os.lstat
+
+    def swapped_lstat(path: os.PathLike[str] | str) -> os.stat_result:
+        metadata = real_lstat(path)
+        if Path(path) != target:
+            return metadata
+        fields = list(metadata)
+        fields[1] += 1
+        return os.stat_result(fields)
+
+    monkeypatch.setattr(execution.os, "lstat", swapped_lstat)
+    with pytest.raises(execution.CausalExecutionV3Error, match="pathname changed"):
+        execution._read_stable(target, "swapped control")
+
+
 def test_publishers_are_no_overwrite_even_for_identical_bytes(tmp_path: Path) -> None:
     target = tmp_path / "one-shot.json"
     execution._publish_no_overwrite(target, b"{}", "one-shot test")

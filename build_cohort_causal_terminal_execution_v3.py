@@ -207,6 +207,33 @@ def _assert_no_symlink_descendant(path: Path, *, root: Path, label: str) -> None
             raise CausalExecutionV3Error(f"{label} has a symlink component")
 
 
+def _assert_durable_plan_bound_paths(
+    *, plan: Mapping[str, Any], plan_path: Path, durable_root: Path
+) -> None:
+    """Recheck every durable plan authority path and all ancestor components."""
+
+    _assert_no_symlink_descendant(
+        plan_path, root=durable_root, label="V3 execution plan"
+    )
+    for group_name in (
+        "base_v2",
+        "recovery_controls",
+        "tools",
+        "implementation_dependencies",
+    ):
+        group = plan[group_name]
+        if not isinstance(group, dict):
+            raise CausalExecutionV3Error(f"V3 {group_name} schema differs")
+        for name, binding in group.items():
+            bound_path = _absolute(binding["path"], f"{group_name}.{name}")
+            _assert_no_symlink_descendant(
+                bound_path, root=durable_root, label=f"{group_name}.{name}"
+            )
+    for name in ("amendment", "structured_preregistration"):
+        bound_path = _absolute(plan[name]["path"], f"V3 {name}")
+        _assert_no_symlink_descendant(bound_path, root=durable_root, label=f"V3 {name}")
+
+
 def _read_stable(path: Path, label: str) -> bytes:
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -235,6 +262,16 @@ def _read_stable(path: Path, label: str) -> bytes:
 
     if identity(before) != identity(after):
         raise CausalExecutionV3Error(f"{label} changed while reading")
+    try:
+        pathname_after = os.lstat(path)
+    except OSError as exc:
+        raise CausalExecutionV3Error(f"{label} pathname changed after reading") from exc
+    if (
+        stat.S_ISLNK(pathname_after.st_mode)
+        or not stat.S_ISREG(pathname_after.st_mode)
+        or identity(pathname_after) != identity(after)
+    ):
+        raise CausalExecutionV3Error(f"{label} pathname changed after reading")
     return b"".join(chunks)
 
 
@@ -394,6 +431,30 @@ def _load_recovery_controls(
         "fence_raw": fence_raw,
         "fence_inventory_files": fence_inventory,
     }
+
+
+def _validate_recovery_authority_bindings(
+    *, plan: Mapping[str, Any], controls: Mapping[str, Any]
+) -> None:
+    """Close recovery-source substitution and cross-document split authority."""
+
+    closure = controls["closure"]
+    fence = controls["fence"]
+    registered_freezer = plan["implementation_dependencies"]["recovery_freezer"]
+    if (
+        closure["recovery_freezer"] != registered_freezer
+        or fence["recovery_freezer"] != registered_freezer
+    ):
+        raise CausalExecutionV3Error(
+            "closure/fence recovery freezer differs from V3 plan authority"
+        )
+    for name in ("wrapper", "incident"):
+        if canonical_bytes(closure[name]) != canonical_bytes(fence[name]):
+            raise CausalExecutionV3Error(f"closure/fence {name} authority differs")
+    if fence["failure_closure"] != plan["recovery_controls"]["v2_failure_closure"]:
+        raise CausalExecutionV3Error(
+            "completion fence failure-closure binding differs from V3 plan"
+        )
 
 
 def _load_plan_document(path: Path) -> tuple[dict[str, Any], bytes]:
@@ -877,6 +938,7 @@ def make_execution_plan(
     }
     if set(plan) != PLAN_KEYS:
         raise AssertionError("V3 plan schema drift")
+    _validate_recovery_authority_bindings(plan=plan, controls=controls)
     return plan
 
 
@@ -941,24 +1003,7 @@ def load_and_validate_execution_plan_stage(
         or set(plan["detached_transport"]) != launcher_v3.DETACHED_TRANSPORT_KEYS
     ):
         raise CausalExecutionV3Error("V3 nested control schema differs")
-    _assert_no_symlink_descendant(path, root=durable, label="V3 execution plan")
-    for group_name in (
-        "base_v2",
-        "recovery_controls",
-        "tools",
-        "implementation_dependencies",
-    ):
-        group = plan[group_name]
-        if not isinstance(group, dict):
-            raise CausalExecutionV3Error(f"V3 {group_name} schema differs")
-        for name, binding in group.items():
-            bound_path = _absolute(binding["path"], f"{group_name}.{name}")
-            _assert_no_symlink_descendant(
-                bound_path, root=durable, label=f"{group_name}.{name}"
-            )
-    for name in ("amendment", "structured_preregistration"):
-        bound_path = _absolute(plan[name]["path"], f"V3 {name}")
-        _assert_no_symlink_descendant(bound_path, root=durable, label=f"V3 {name}")
+    _assert_durable_plan_bound_paths(plan=plan, plan_path=path, durable_root=durable)
     base_paths = {
         "execution_plan": control / v2.PLAN_FILENAME,
         "detached_receipt": control / v2.DETACHED_RECEIPT_FILENAME,
@@ -1027,6 +1072,7 @@ def load_and_validate_execution_plan_stage(
             expected_path=tooling / filename,
             label=f"V3 dependency {name}",
         )
+    _validate_recovery_authority_bindings(plan=plan, controls=controls)
     _validate_binding(
         plan["structured_preregistration"],
         expected_path=tooling / STRUCTURED_PREREGISTRATION_FILENAME,
@@ -1166,6 +1212,7 @@ def load_and_validate_execution_plan_stage(
         EXPECTED_PYTHON_VERSION,
     ):
         raise CausalExecutionV3Error("actual V3 Python runtime differs")
+    _assert_durable_plan_bound_paths(plan=plan, plan_path=path, durable_root=durable)
     return plan, raw
 
 
