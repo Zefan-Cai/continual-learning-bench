@@ -8,19 +8,38 @@ logic, or any efficacy-bearing bytes.
 
 V1 required both `/proc/<pid>/cmdline` and `/proc/<pid>/cwd` to be readable for
 every process.  The Pluto container can deny `readlink(/proc/<pid>/cwd)` for a
-small, stable set of long-lived processes even when their command lines remain
-readable.  V2 permits that one case only when all such processes were frozen
-before semantic opening in a canonical, exact-set evidence inventory containing
-two identical snapshots.  Each record binds only `uid`, `gid`, `pid`, `ppid`,
-`comm`, process `start_ticks`, `cmdline_sha256`, `cmdline_size_bytes`, and
-`cgroup_sha256`; raw command lines, raw cgroups, and credentials are never
-persisted.  Every non-verifier command line is still read and scanned at each
+small set of long-lived processes even when their command lines remain
+readable.  Inventory protocol/schema V2 retains an exact static exception set
+that predates the wrapper and adds one narrowly registered dynamic policy: one
+direct child of the exact static `monitor-connect` anchor may rotate PID only
+while matching either the frozen `sleep` profile or the bounded pre-`exec`
+anchor-clone transition profile.  Both profiles bind exact command-line hash
+and size; the transition profile is derived from the exact anchor record.  The
+child must have proc-directory uid/gid zero, all four `Uid:` and `Gid:` status
+columns zero, exact `EACCES`, and the same cgroup bytes as frozen `/proc/1`.
+Maximum and required concurrency are both one.  Each record additionally binds
+`cwd_errno`, `status_uids`, and `status_gids`; raw command lines, raw cgroups,
+and credentials are never persisted.  Every non-verifier command line is still
+read and scanned literally before any cwd handling at each
 attestation sample, and any reference to the causal checkout, the complete
 durable attempt root, or the artifact root is fatal.  The verifier's own exact
 NUL-separated command line is separately bound by the detached receipt.  An
 unregistered unreadable cwd, an unreadable command line, a missing or extra
-exception, PID reuse, process restart, evidence drift, or a process that began
-after the registered wrapper is fatal.
+static exception, static PID reuse/restart, anchor drift, dynamic parent,
+profile, identity, cgroup, or count drift, and evidence drift are fatal.  Only
+the dynamic leaf PID/start identity may rotate.
+
+Policy discovery is bounded to 100 attempts at 50 milliseconds.  Only the
+single exact anchor-clone transition described above is retryable; zero child,
+multiple children, a wrong parent/profile/identity/cgroup, any extra
+post-wrapper cwd exception, or any other scan error is immediately fatal.
+Static records and the exact anchor must remain identical across discovery.
+Discovery observations are not registered snapshots.  Snapshot one begins
+only after an exact `sleep` child has been observed and freezes that sleep
+profile; snapshot two follows at least one second later and may contain either
+registered profile.  The logical inventory digest commits both the exact
+static set and the dynamic policy, while a separate static digest supports the
+stable process-audit payload.
 
 The exception set is generated only by the source-hash-bound standalone freezer
 copy under the source-commit-qualified `/tmp` transport directory.  The freezer
@@ -32,13 +51,15 @@ V2 does not claim that this complete persistent service ancestry terminates.
 Instead, `ppid=1`, a new session/process group, sanitized descriptors, no
 controlling terminal or `/dev/pts` descriptor, and the exact exec boundary prove
 that the freezer itself is detached from the interactive terminal.  It records
-two identical full-procfs snapshots whose `CLOCK_BOOTTIME` timestamps
-are at least one second apart.  Its source hash must equal the freezer source
+two full-procfs snapshots whose `CLOCK_BOOTTIME` timestamps are at least one
+second apart.  Static records must be identical; each snapshot separately
+records and validates its dynamic observation, whose PID may differ.  Its
+source hash must equal the freezer source
 dependency bound by the V2 plan, and the freezer PID/start identity itself must
 be gone before the plan can be accepted.
 
 For compatibility, the inventory and receipt wire key remains
-`startup_ancestors`, but V2 contract revision 3 requires it to contain exactly
+`startup_ancestors`, but V2 contract revision 4 requires it to contain exactly
 one record: the pre-fork Python launcher parent.  It is not an ancestry walk.
 
 Each exception is classified only as a
@@ -52,9 +73,15 @@ permission evidence alone cannot distinguish a fixed platform daemon from a
 different, already-running long-lived operator process.  Deployment therefore
 trusts the platform/orchestrator not to supply such an unrelated process unless
 a separately registered platform allowlist or trusted cgroup/ancestry attestation
-is added.  No operator may manually add an exception.
+is added.  No operator may manually add an exception.  Contract revision 4
+adds the dynamic anchor policy above.  Root identity and equality with
+`/proc/1` cgroup do not mechanically prove platform origin.  Because the
+dynamic cwd is unreadable, absence of a target path in that cwd is also not
+mechanically proved; only its readable command line is mechanically scanned.
+These two limits are registered trust assumptions, not scientific claims.
 
-The freezer records boot, PID/mount namespace, procfs mount, `/proc/1`, and
+The freezer records boot, PID/mount namespace, procfs mount, `/proc/1` identity
+and cgroup hash, and
 `/proc/self` identity, and the detached launcher plus same-PID attester require
 exact live continuity from that inventory baseline through attestation
 completion.  The downstream revalidator and seal validate the frozen namespace
@@ -94,8 +121,10 @@ command line or cwd references the causal checkout, complete durable attempt
 root, or artifact root remains fatal in the freezer and attester full-procfs
 scans regardless of this service-ancestry boundary.
 
-The process audit is explicitly a point-in-time `cmdline`/`cwd` absence proof at
-the registered samples.  It does not claim continuous absence between samples
+The process audit is explicitly a point-in-time readable-`cmdline` scan plus
+exact-static-cwd and registered-dynamic-policy proof at the registered samples.
+Its stable audit payload commits only the exact static digest and dynamic policy
+digest, never a rotating PID.  It does not claim continuous absence between samples
 and does not expand V2 to inspect `fd`, `maps`, or `map_files` target references;
 the only descriptor inspection is the transport proof that no PTY remains.
 
@@ -103,3 +132,8 @@ Revalidation delegates the semantic reconstruction to
 the exact V1 revalidation function after V2-only control validation, preserving
 the decision bytes and statistical logic.  The structured-state trigger branch
 remains identical to V1.
+The internal object passed to the unchanged V1 validator contains a synthetic
+legacy `linux_procfs_cmdline_and_cwd` method solely as an unpublished
+compatibility adapter.  It is not written to the V2 attestation, receipt,
+revalidation result, seal, or any external scientific evidence; the published
+V2 process-audit method and its narrower claims remain authoritative.

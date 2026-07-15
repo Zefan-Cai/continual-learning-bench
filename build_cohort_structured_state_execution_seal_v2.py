@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import errno
 import hashlib
 import json
 import os
@@ -33,7 +34,7 @@ DETACHED_LAUNCH_CONTRACT_FILENAME = (
     "CAUSAL_TERMINAL_VERIFIER_V2_DETACHED_LAUNCH_CONTRACT.json"
 )
 EXCEPTION_INVENTORY_FILENAME = (
-    "CAUSAL_TERMINAL_VERIFIER_PROCFS_EXCEPTION_INVENTORY_V1.json"
+    "CAUSAL_TERMINAL_VERIFIER_PROCFS_EXCEPTION_INVENTORY_V2.json"
 )
 DETACHED_HANDOFF_FILENAME = "CAUSAL_TERMINAL_VERIFIER_V2_DETACHED_HANDOFF.json"
 DETACHED_RECEIPT_FILENAME = "CAUSAL_TERMINAL_VERIFIER_V2_DETACHED_RECEIPT.json"
@@ -55,10 +56,10 @@ CAUSAL_PROTOCOL_SEAL_STATUS = v1.CAUSAL_PROTOCOL_SEAL_STATUS
 PLAN_TOOL_NAMES = frozenset({"attester", "revalidator", "execution_seal_builder"})
 PLAN_INVOCATION_NAMES = PLAN_TOOL_NAMES
 
-EXCEPTION_INVENTORY_PROTOCOL = "cohort_causal_procfs_cwd_exception_inventory_v1"
-EXCEPTION_INVENTORY_SCHEMA_VERSION = 1
+EXCEPTION_INVENTORY_PROTOCOL = "cohort_causal_procfs_cwd_exception_inventory_v2"
+EXCEPTION_INVENTORY_SCHEMA_VERSION = 2
 PROCESS_AUDIT_METHOD = (
-    "linux_procfs_cmdline_cwd_point_in_time_with_frozen_permission_exceptions_v2"
+    "linux_procfs_cmdline_static_exact_dynamic_sleep_or_anchor_clone_policy_v3"
 )
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -123,6 +124,8 @@ EXCEPTION_INVENTORY_KEYS = frozenset(
     {
         "frozen_at_utc",
         "freezer",
+        "dynamic_policy",
+        "dynamic_policy_sha256",
         "inventory_sha256",
         "launch_expectation",
         "outcome_blind",
@@ -131,6 +134,7 @@ EXCEPTION_INVENTORY_KEYS = frozenset(
         "schema_version",
         "semantic_artifacts_opened",
         "snapshots",
+        "static_records_sha256",
         "status",
         "wrapper",
     }
@@ -139,10 +143,13 @@ EXCEPTION_SNAPSHOT_KEYS = frozenset(
     {
         "captured_at_utc",
         "captured_boottime_ns",
-        "record_count",
-        "records",
-        "records_sha256",
+        "dynamic_observation_count",
+        "dynamic_observations",
+        "dynamic_observations_sha256",
         "sequence",
+        "static_record_count",
+        "static_records",
+        "static_records_sha256",
     }
 )
 EXCEPTION_RECORD_KEYS = frozenset(
@@ -152,11 +159,41 @@ EXCEPTION_RECORD_KEYS = frozenset(
         "cmdline_sha256",
         "cmdline_size_bytes",
         "comm",
+        "cwd_errno",
         "gid",
         "pid",
         "ppid",
         "start_ticks",
+        "status_gids",
+        "status_uids",
         "uid",
+    }
+)
+DYNAMIC_POLICY_KEYS = frozenset(
+    {
+        "anchor_comm",
+        "anchor_pid",
+        "anchor_start_ticks",
+        "anchor_static_record_sha256",
+        "classification",
+        "direct_child_required",
+        "dynamic_cwd_target_absence_mechanically_proven",
+        "dynamic_platform_origin_mechanically_proven",
+        "leaf_cgroup_sha256",
+        "leaf_cmdline_sha256",
+        "leaf_cmdline_size_bytes",
+        "leaf_comm",
+        "leaf_cwd_errno",
+        "leaf_proc_dir_gid",
+        "leaf_proc_dir_uid",
+        "leaf_status_gids",
+        "leaf_status_uids",
+        "literal_cmdline_target_scan_required",
+        "max_concurrent",
+        "required_concurrent",
+        "transitional_leaf_cmdline_sha256",
+        "transitional_leaf_cmdline_size_bytes",
+        "transitional_leaf_comm",
     }
 )
 EXCEPTION_WRAPPER_KEYS = frozenset({"pid", "start_ticks"})
@@ -187,6 +224,7 @@ RUNTIME_NAMESPACE_KEYS = frozenset(
         "mount_namespace_inode",
         "boot_id",
         "pid_namespace_inode",
+        "proc1_cgroup_sha256",
         "proc1_comm_sha256",
         "proc1_start_ticks",
         "proc_mountinfo_sha256",
@@ -248,6 +286,8 @@ PROCESS_AUDIT_KEYS = frozenset(
     | {
         "exception_inventory_sha256",
         "durable_attempt_root_path",
+        "dynamic_policy_enforced",
+        "dynamic_policy_sha256",
         "observed_exception_count",
         "observed_exceptions_sha256",
     }
@@ -259,8 +299,20 @@ DETACHED_LAUNCH_CONTRACT = {
     "deployment_requires_ssh_multiplexing_disabled": True,
     "detached_parent_pid": 1,
     "detached_launcher_parent_gone_required": True,
+    "dynamic_anchor_clone_transition_profile_enabled": True,
+    "dynamic_policy_discovery_interval_milliseconds": 50,
+    "dynamic_policy_discovery_max_attempts": 100,
+    "dynamic_policy_discovery_retry_state": "one_exact_anchor_clone_child_only",
+    "dynamic_policy_discovery_samples_registered": False,
     "exception_platform_origin_mechanically_proven": False,
-    "exception_scope": "stable_pre_wrapper_cwd_eacces_or_eperm_only",
+    "dynamic_monitor_connect_sleep_policy_enabled": True,
+    "dynamic_policy_cmdline_literal_target_scan_required": True,
+    "dynamic_policy_cwd_target_absence_mechanically_proven": False,
+    "dynamic_policy_exact_pid_binding_required": False,
+    "dynamic_policy_platform_origin_mechanically_proven": False,
+    "dynamic_policy_requires_direct_static_anchor_child": True,
+    "dynamic_policy_requires_max_concurrent_one": True,
+    "exception_scope": "exact_static_pre_wrapper_plus_one_dynamic_sleep_or_anchor_clone_child",
     "forbid_runtime_namespace_drift_before_attestation_completion": True,
     "full_ssh_service_ancestry_gone_mechanically_proven": False,
     "launcher_python_isolated": True,
@@ -271,13 +323,14 @@ DETACHED_LAUNCH_CONTRACT = {
     "namespace_origin_trust_assumption": "freezer_launched_by_operator_in_original_pluto_default_container_namespace",
     "outcome_blind": True,
     "persistent_ssh_service_ancestry_outside_terminal_detachment_proof": True,
-    "protocol": "cohort_causal_terminal_verifier_v2_detached_launch_contract_v3",
+    "protocol": "cohort_causal_terminal_verifier_v2_detached_launch_contract_v4",
     "require_interactive_ssh_disconnected": False,
     "require_no_controlling_tty": True,
     "require_no_pts_fds": True,
     "require_stdio_devnull": True,
     "receipt_same_pid_exec": True,
-    "schema_version": 3,
+    "schema_version": 4,
+    "static_cwd_exceptions_remain_exact_pre_wrapper": True,
     "ssh_multiplexing_disabled_mechanically_proven": False,
     "status": "registered",
     "transport_only_no_scientific_authority": True,
@@ -516,6 +569,7 @@ def _validate_runtime_namespace(value: Any, *, label: str) -> dict[str, Any]:
         if not _is_int(namespace[key]) or namespace[key] <= 0:
             raise ExecutionSealV2Error(f"{label} {key} is invalid")
     _require_sha256(namespace["proc_mountinfo_sha256"], f"{label} mountinfo")
+    _require_sha256(namespace["proc1_cgroup_sha256"], f"{label} proc1 cgroup")
     _require_sha256(namespace["proc1_comm_sha256"], f"{label} proc1 comm")
     if (
         not isinstance(namespace["boot_id"], str)
@@ -567,6 +621,158 @@ def _validate_handoff_bytes(*, payload: bytes, expected: dict[str, Any]) -> None
         raise ExecutionSealV2Error("detached transport handoff semantics differ")
 
 
+def _validate_id_vector(value: Any, label: str) -> list[int]:
+    if (
+        not isinstance(value, list)
+        or len(value) != 4
+        or any(not _is_int(item) or item < 0 for item in value)
+    ):
+        raise ExecutionSealV2Error(f"{label} is not four nonnegative IDs")
+    return value
+
+
+def _validate_exception_record(
+    value: Any, *, label: str, classification: str
+) -> dict[str, Any]:
+    record = _require_exact(value, EXCEPTION_RECORD_KEYS, label)
+    if record["classification"] != classification:
+        raise ExecutionSealV2Error(f"{label} classification differs")
+    for key in ("uid", "gid", "ppid", "pid", "start_ticks"):
+        minimum = 0 if key in {"uid", "gid", "ppid", "start_ticks"} else 1
+        if not _is_int(record[key]) or record[key] < minimum:
+            raise ExecutionSealV2Error(f"{label} {key} is invalid")
+    if (
+        not _is_int(record["cmdline_size_bytes"])
+        or record["cmdline_size_bytes"] < 0
+        or not _is_int(record["cwd_errno"])
+        or record["cwd_errno"] not in {errno.EACCES, errno.EPERM}
+    ):
+        raise ExecutionSealV2Error(f"{label} cmdline size or cwd errno is invalid")
+    if (
+        not isinstance(record["comm"], str)
+        or _COMM_RE.fullmatch(record["comm"]) is None
+    ):
+        raise ExecutionSealV2Error(f"{label} comm is not canonical printable text")
+    _validate_id_vector(record["status_uids"], f"{label} status_uids")
+    _validate_id_vector(record["status_gids"], f"{label} status_gids")
+    _require_sha256(record["cmdline_sha256"], f"{label} cmdline")
+    _require_sha256(record["cgroup_sha256"], f"{label} cgroup")
+    return record
+
+
+def dynamic_leaf_matches_policy(
+    record: dict[str, Any],
+    *,
+    policy: dict[str, Any],
+    proc1_cgroup_sha256: str,
+    wrapper_start_ticks: int,
+) -> bool:
+    """Return the exact registered dynamic-leaf predicate, without PID binding."""
+
+    exact_profile = (
+        record.get("comm") == policy.get("leaf_comm") == "sleep"
+        and record.get("cmdline_sha256") == policy.get("leaf_cmdline_sha256")
+        and record.get("cmdline_size_bytes") == policy.get("leaf_cmdline_size_bytes")
+    ) or (
+        record.get("comm") == policy.get("transitional_leaf_comm") == "monitor-connect"
+        and record.get("cmdline_sha256")
+        == policy.get("transitional_leaf_cmdline_sha256")
+        and record.get("cmdline_size_bytes")
+        == policy.get("transitional_leaf_cmdline_size_bytes")
+    )
+    return (
+        record.get("classification")
+        == "dynamic_monitor_connect_sleep_cwd_eacces_process"
+        and record.get("ppid") == policy.get("anchor_pid")
+        and exact_profile
+        and _is_int(record.get("cmdline_size_bytes"))
+        and record["cmdline_size_bytes"] > 0
+        and _is_int(record.get("start_ticks"))
+        and record["start_ticks"] >= wrapper_start_ticks
+        and record.get("uid") == record.get("gid") == 0
+        and record.get("status_uids") == record.get("status_gids") == [0, 0, 0, 0]
+        and record.get("cgroup_sha256")
+        == policy.get("leaf_cgroup_sha256")
+        == proc1_cgroup_sha256
+        and record.get("cwd_errno") == policy.get("leaf_cwd_errno") == errno.EACCES
+    )
+
+
+def _validate_dynamic_policy(
+    value: Any,
+    *,
+    namespace: dict[str, Any],
+    static_records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    policy = _require_exact(value, DYNAMIC_POLICY_KEYS, "dynamic cwd policy")
+    for key in (
+        "anchor_pid",
+        "anchor_start_ticks",
+        "leaf_cmdline_size_bytes",
+        "leaf_cwd_errno",
+        "leaf_proc_dir_gid",
+        "leaf_proc_dir_uid",
+        "max_concurrent",
+        "required_concurrent",
+        "transitional_leaf_cmdline_size_bytes",
+    ):
+        if not _is_int(policy[key]) or policy[key] < 0:
+            raise ExecutionSealV2Error(f"dynamic cwd policy {key} is invalid")
+    if (
+        policy["classification"]
+        != "dynamic_monitor_connect_sleep_cwd_eacces_direct_child_policy"
+        or policy["anchor_comm"] != "monitor-connect"
+        or policy["leaf_comm"] != "sleep"
+        or policy["transitional_leaf_comm"] != "monitor-connect"
+        or policy["leaf_cmdline_size_bytes"] <= 0
+        or policy["transitional_leaf_cmdline_size_bytes"] <= 0
+        or policy["leaf_cwd_errno"] != errno.EACCES
+        or policy["leaf_proc_dir_uid"] != 0
+        or policy["leaf_proc_dir_gid"] != 0
+        or policy["leaf_status_uids"] != [0, 0, 0, 0]
+        or policy["leaf_status_gids"] != [0, 0, 0, 0]
+        or policy["leaf_cgroup_sha256"] != namespace["proc1_cgroup_sha256"]
+        or policy["max_concurrent"] != 1
+        or policy["required_concurrent"] != 1
+        or policy["direct_child_required"] is not True
+        or policy["literal_cmdline_target_scan_required"] is not True
+        or policy["dynamic_cwd_target_absence_mechanically_proven"] is not False
+        or policy["dynamic_platform_origin_mechanically_proven"] is not False
+    ):
+        raise ExecutionSealV2Error("dynamic cwd policy scope differs")
+    _validate_id_vector(policy["leaf_status_uids"], "policy leaf status_uids")
+    _validate_id_vector(policy["leaf_status_gids"], "policy leaf status_gids")
+    _require_sha256(policy["leaf_cgroup_sha256"], "policy leaf cgroup")
+    _require_sha256(policy["leaf_cmdline_sha256"], "policy leaf cmdline")
+    _require_sha256(
+        policy["transitional_leaf_cmdline_sha256"],
+        "policy transitional leaf cmdline",
+    )
+    _require_sha256(
+        policy["anchor_static_record_sha256"], "policy anchor static record"
+    )
+    anchors = [
+        record
+        for record in static_records
+        if record["pid"] == policy["anchor_pid"]
+        and record["start_ticks"] == policy["anchor_start_ticks"]
+        and record["comm"] == policy["anchor_comm"]
+        and canonical_sha256(record) == policy["anchor_static_record_sha256"]
+    ]
+    if len(anchors) != 1:
+        raise ExecutionSealV2Error(
+            "dynamic policy anchor is not one exact static record"
+        )
+    anchor = anchors[0]
+    if (
+        policy["transitional_leaf_cmdline_sha256"] != anchor["cmdline_sha256"]
+        or policy["transitional_leaf_cmdline_size_bytes"]
+        != anchor["cmdline_size_bytes"]
+    ):
+        raise ExecutionSealV2Error("dynamic transition profile differs from anchor")
+    return policy
+
+
 def validate_exception_inventory(
     value: Any,
     *,
@@ -588,7 +794,7 @@ def validate_exception_inventory(
         or inventory["outcome_blind"] is not True
         or inventory["semantic_artifacts_opened"] is not False
     ):
-        raise ExecutionSealV2Error("procfs exception inventory is not frozen blind V1")
+        raise ExecutionSealV2Error("procfs exception inventory is not frozen blind V2")
     freezer = _require_exact(
         inventory["freezer"], EXCEPTION_FREEZER_KEYS, "exception inventory freezer"
     )
@@ -718,73 +924,100 @@ def validate_exception_inventory(
             )
         prior_time = captured
         prior_boottime_ns = captured_boottime_ns
-        records = snapshot["records"]
-        if not isinstance(records, list):
-            raise ExecutionSealV2Error("exception snapshot records must be a list")
-        validated_records: list[dict[str, Any]] = []
-        for index, raw_record in enumerate(records):
-            record = _require_exact(
-                raw_record,
-                EXCEPTION_RECORD_KEYS,
-                f"exception snapshot {position} record {index}",
+
+        static_records = snapshot["static_records"]
+        dynamic_records = snapshot["dynamic_observations"]
+        if not isinstance(static_records, list) or not isinstance(
+            dynamic_records, list
+        ):
+            raise ExecutionSealV2Error("exception snapshot record lists are invalid")
+        for index, record in enumerate(static_records):
+            validated = _validate_exception_record(
+                record,
+                label=f"exception snapshot {position} static record {index}",
+                classification="stable_pre_wrapper_cwd_permission_denied_process",
             )
             if (
-                record["classification"]
-                != "stable_pre_wrapper_cwd_permission_denied_process"
-            ):
-                raise ExecutionSealV2Error("exception classification differs")
-            for key in ("uid", "gid", "ppid", "pid", "start_ticks"):
-                minimum = 0 if key in {"uid", "gid", "ppid"} else 1
-                if not _is_int(record[key]) or record[key] < minimum:
-                    raise ExecutionSealV2Error(f"exception {key} is invalid")
-            if (
-                not _is_int(record["cmdline_size_bytes"])
-                or record["cmdline_size_bytes"] < 0
-            ):
-                raise ExecutionSealV2Error("exception cmdline_size_bytes is invalid")
-            if record["pid"] == wrapper_pid:
-                raise ExecutionSealV2Error("wrapper cannot be a procfs exception")
-            if record["start_ticks"] >= wrapper_start_ticks:
-                raise ExecutionSealV2Error(
-                    "every procfs exception must predate the wrapper"
-                )
-            if (
-                not isinstance(record["comm"], str)
-                or _COMM_RE.fullmatch(record["comm"]) is None
+                validated["pid"] == wrapper_pid
+                or validated["start_ticks"] >= wrapper_start_ticks
             ):
                 raise ExecutionSealV2Error(
-                    "exception comm is not canonical printable text"
+                    "every static exception must predate wrapper"
                 )
-            _require_sha256(record["cmdline_sha256"], "exception cmdline_sha256")
-            _require_sha256(record["cgroup_sha256"], "exception cgroup_sha256")
-            validated_records.append(record)
-        sort_keys = [
-            (item["pid"], item["start_ticks"], item["uid"], item["comm"])
-            for item in validated_records
-        ]
-        if sort_keys != sorted(sort_keys) or len(
-            {item[0] for item in sort_keys}
-        ) != len(sort_keys):
-            raise ExecutionSealV2Error("exception records are not PID-sorted unique")
-        if snapshot["record_count"] != len(validated_records):
-            raise ExecutionSealV2Error("exception record_count differs")
-        digest = canonical_sha256(validated_records)
-        if snapshot["records_sha256"] != digest:
-            raise ExecutionSealV2Error("exception records digest differs")
+        static_sort = [(item["pid"], item["start_ticks"]) for item in static_records]
+        if static_sort != sorted(static_sort) or len(
+            {item[0] for item in static_sort}
+        ) != len(static_sort):
+            raise ExecutionSealV2Error(
+                "static exception records are not PID-sorted unique"
+            )
+        if snapshot["static_record_count"] != len(static_records) or snapshot[
+            "static_records_sha256"
+        ] != canonical_sha256(static_records):
+            raise ExecutionSealV2Error("static exception count or digest differs")
         validated_snapshots.append(snapshot)
-    if canonical_bytes(validated_snapshots[0]["records"]) != canonical_bytes(
-        validated_snapshots[1]["records"]
+
+    static_records = validated_snapshots[0]["static_records"]
+    if canonical_bytes(static_records) != canonical_bytes(
+        validated_snapshots[1]["static_records"]
     ):
-        raise ExecutionSealV2Error("exception snapshots are not identical")
-    records = validated_snapshots[0]["records"]
-    if inventory["inventory_sha256"] != canonical_sha256(records):
-        raise ExecutionSealV2Error("exception inventory digest differs")
+        raise ExecutionSealV2Error("static exception snapshots are not identical")
+    if inventory["static_records_sha256"] != canonical_sha256(static_records):
+        raise ExecutionSealV2Error("static exception inventory digest differs")
+    policy = _validate_dynamic_policy(
+        inventory["dynamic_policy"], namespace=namespace, static_records=static_records
+    )
+    if inventory["dynamic_policy_sha256"] != canonical_sha256(policy):
+        raise ExecutionSealV2Error("dynamic policy digest differs")
+    if inventory["inventory_sha256"] != canonical_sha256(
+        {"dynamic_policy": policy, "static_records": static_records}
+    ):
+        raise ExecutionSealV2Error("logical exception inventory digest differs")
+
+    for position, snapshot in enumerate(validated_snapshots, start=1):
+        dynamic_records = snapshot["dynamic_observations"]
+        if (
+            snapshot["dynamic_observation_count"] != len(dynamic_records)
+            or len(dynamic_records) != policy["required_concurrent"]
+            or len(dynamic_records) > policy["max_concurrent"]
+            or snapshot["dynamic_observations_sha256"]
+            != canonical_sha256(dynamic_records)
+        ):
+            raise ExecutionSealV2Error("dynamic observation count or digest differs")
+        dynamic_pids: set[int] = set()
+        for index, raw_record in enumerate(dynamic_records):
+            record = _validate_exception_record(
+                raw_record,
+                label=f"exception snapshot {position} dynamic observation {index}",
+                classification="dynamic_monitor_connect_sleep_cwd_eacces_process",
+            )
+            if record["pid"] in dynamic_pids or record["pid"] in {
+                item["pid"] for item in static_records
+            }:
+                raise ExecutionSealV2Error("dynamic/static PIDs overlap or repeat")
+            dynamic_pids.add(record["pid"])
+            if not dynamic_leaf_matches_policy(
+                record,
+                policy=policy,
+                proc1_cgroup_sha256=namespace["proc1_cgroup_sha256"],
+                wrapper_start_ticks=wrapper_start_ticks,
+            ):
+                raise ExecutionSealV2Error("dynamic observation is outside policy")
+            if position == 1 and not (
+                record["comm"] == policy["leaf_comm"] == "sleep"
+                and record["cmdline_sha256"] == policy["leaf_cmdline_sha256"]
+                and record["cmdline_size_bytes"] == policy["leaf_cmdline_size_bytes"]
+            ):
+                raise ExecutionSealV2Error(
+                    "registered snapshot one did not freeze the sleep profile"
+                )
+
     frozen = _parse_utc(inventory["frozen_at_utc"], "exception frozen_at_utc")
     if prior_time is None or frozen < prior_time:
         raise ExecutionSealV2Error("exception inventory froze before its snapshots")
     if latest_allowed_time is not None and frozen > latest_allowed_time:
         raise ExecutionSealV2Error("exception inventory was frozen after the V2 plan")
-    return inventory, records
+    return inventory, static_records
 
 
 def validate_detached_receipt_document(
@@ -1725,8 +1958,10 @@ def _project_v2_attestation_for_v1(
         or process["artifact_root_path"] != expectation["artifact_root"]
         or process["durable_attempt_root_path"] != expectation["durable_attempt_root"]
         or process["exception_inventory_sha256"] != _sha256(exception_raw)
+        or process["dynamic_policy_enforced"] is not True
+        or process["dynamic_policy_sha256"] != exception["dynamic_policy_sha256"]
         or process["observed_exception_count"] != len(records)
-        or process["observed_exceptions_sha256"] != exception["inventory_sha256"]
+        or process["observed_exceptions_sha256"] != exception["static_records_sha256"]
         or process["audit_sha256"] != canonical_sha256(process_payload)
     ):
         raise ExecutionSealV2Error("V2 process audit differs from frozen exact set")
@@ -1736,6 +1971,8 @@ def _project_v2_attestation_for_v1(
     del legacy["procfs_exception_inventory"]
     legacy["protocol"] = v1.ATTESTATION_PROTOCOL
     legacy["schema_version"] = 1
+    # This synthetic legacy view exists only to reuse the unchanged V1 semantic
+    # validator. It is never published and is not external scientific evidence.
     legacy_process_payload = {
         "artifact_root_path": process["artifact_root_path"],
         "attempt_checkout_path": process["attempt_checkout_path"],

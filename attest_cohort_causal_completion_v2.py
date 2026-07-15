@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Publish the outcome-blind causal completion attestation V2.
 
-The only V2 exception is a frozen exact set of stable processes that predate
-the wrapper, whose cmdline remains readable, and whose procfs cwd link returns
-EACCES/EPERM.  This is not a platform-provenance claim.  Every cmdline is still
-scanned for both causal target paths.  No raw command line is ever persisted.
+V2 freezes an exact pre-wrapper static cwd-exception set plus one direct child
+of its exact ``monitor-connect`` anchor.  The rotating child must match either
+the frozen ``sleep`` profile or the bounded pre-exec anchor-clone profile, with
+root status IDs, the frozen /proc/1 cgroup, EACCES, and concurrency one.  This
+is not a platform-provenance or unreadable-cwd target-absence claim.  Every
+cmdline is still read and literally scanned before cwd handling.  No raw
+command line is ever persisted.
 """
 
 from __future__ import annotations
@@ -59,12 +62,31 @@ def _read_stat_identity(entry: Path) -> tuple[int, int, str]:
     return _parse_proc_stat_identity((entry / "stat").read_bytes())
 
 
-def _read_process_record(entry: Path, cmdline_bytes: bytes) -> dict[str, Any]:
+def _read_status_ids(entry: Path) -> tuple[list[int], list[int]]:
+    status = (entry / "status").read_bytes().splitlines()
+    uid_lines = [line for line in status if line.startswith(b"Uid:")]
+    gid_lines = [line for line in status if line.startswith(b"Gid:")]
+    if len(uid_lines) != 1 or len(gid_lines) != 1:
+        raise AttestationV2Error("proc status has no unique Uid/Gid records")
+
+    def parse(line: bytes, label: str) -> list[int]:
+        fields = line.split()[1:]
+        if len(fields) != 4 or any(not field.isdigit() for field in fields):
+            raise AttestationV2Error(f"proc status {label} is not four canonical IDs")
+        return [int(field) for field in fields]
+
+    return parse(uid_lines[0], "Uid"), parse(gid_lines[0], "Gid")
+
+
+def _read_process_record(
+    entry: Path, cmdline_bytes: bytes, *, cwd_errno: int, classification: str
+) -> dict[str, Any]:
     try:
         metadata = os.stat(entry, follow_symlinks=False)
         comm_raw = (entry / "comm").read_bytes()
         stat_raw = (entry / "stat").read_bytes()
         cgroup_raw = (entry / "cgroup").read_bytes()
+        status_uids, status_gids = _read_status_ids(entry)
     except FileNotFoundError:
         raise
     except OSError as exc:
@@ -82,14 +104,17 @@ def _read_process_record(entry: Path, cmdline_bytes: bytes) -> dict[str, Any]:
         raise AttestationV2Error("proc stat/comm identity differs")
     return {
         "cgroup_sha256": hashlib.sha256(cgroup_raw).hexdigest(),
-        "classification": "stable_pre_wrapper_cwd_permission_denied_process",
+        "classification": classification,
         "cmdline_sha256": hashlib.sha256(cmdline_bytes).hexdigest(),
         "cmdline_size_bytes": len(cmdline_bytes),
         "comm": comm,
+        "cwd_errno": cwd_errno,
         "gid": metadata.st_gid,
         "pid": int(entry.name),
         "ppid": ppid,
         "start_ticks": start_ticks,
+        "status_gids": status_gids,
+        "status_uids": status_uids,
         "uid": metadata.st_uid,
     }
 
@@ -186,6 +211,7 @@ def _current_runtime_namespace() -> dict[str, Any]:
     proc1_ppid, proc1_start_ticks, proc1_comm_sha256 = _read_stat_identity(
         Path("/proc/1")
     )
+    proc1_cgroup_raw = Path("/proc/1/cgroup").read_bytes()
     if proc1_ppid != 0:
         raise AttestationV2Error("/proc/1 does not have PPID zero")
     self_raw = Path("/proc/self/stat").read_bytes()
@@ -196,6 +222,7 @@ def _current_runtime_namespace() -> dict[str, Any]:
         "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
         "mount_namespace_inode": os.stat("/proc/self/ns/mnt").st_ino,
         "pid_namespace_inode": os.stat("/proc/self/ns/pid").st_ino,
+        "proc1_cgroup_sha256": hashlib.sha256(proc1_cgroup_raw).hexdigest(),
         "proc1_comm_sha256": proc1_comm_sha256,
         "proc1_start_ticks": proc1_start_ticks,
         "proc_mountinfo_sha256": hashlib.sha256(matches[0]).hexdigest(),
@@ -318,14 +345,27 @@ def _scan_process_references(
     attempt_checkout: Path,
     artifact_root: Path,
     exception_records: list[dict[str, Any]],
+    dynamic_policy: dict[str, Any],
+    dynamic_policy_sha256: str,
+    wrapper_start_ticks: int,
     exception_file_sha256: str,
     proc_root: Path = Path("/proc"),
     self_pid: int | None = None,
 ) -> dict[str, Any]:
-    """Prove exact process absence with the frozen cwd-only exception set."""
+    """Verify exact static exceptions and one policy-bound rotating leaf."""
 
     if not proc_root.is_dir():
         raise AttestationV2Error("Linux procfs is required for V2 process audit")
+    try:
+        live_proc1_cgroup_sha256 = hashlib.sha256(
+            (proc_root / "1/cgroup").read_bytes()
+        ).hexdigest()
+    except OSError as exc:
+        raise AttestationV2Error(
+            "cannot read /proc/1 cgroup during process audit"
+        ) from exc
+    if live_proc1_cgroup_sha256 != dynamic_policy["leaf_cgroup_sha256"]:
+        raise AttestationV2Error("/proc/1 cgroup drifted during process audit")
     targets = (
         v1._absolute_without_following(attempt_checkout),
         v1._absolute_without_following(artifact_root).parents[1],
@@ -336,6 +376,7 @@ def _scan_process_references(
     if len(registered) != len(exception_records):
         raise AttestationV2Error("frozen exception PIDs are not unique")
     observed: list[dict[str, Any]] = []
+    observed_dynamic_count = 0
     current_self = os.getpid() if self_pid is None else self_pid
     try:
         entries = sorted(
@@ -369,17 +410,42 @@ def _scan_process_references(
                     "process cwd failed for a reason other than EACCES/EPERM"
                 ) from exc
             try:
-                record = _read_process_record(entry, cmdline_bytes)
+                static_record = _read_process_record(
+                    entry,
+                    cmdline_bytes,
+                    cwd_errno=exc.errno,
+                    classification=("stable_pre_wrapper_cwd_permission_denied_process"),
+                )
             except FileNotFoundError:
                 continue
             expected = registered.get(pid)
-            if expected is None:
-                raise AttestationV2Error("unregistered process has unreadable cwd")
-            if record != expected:
-                raise AttestationV2Error(
-                    "registered cwd exception drifted or its PID restarted"
-                )
-            observed.append(record)
+            if expected is not None:
+                if static_record != expected:
+                    raise AttestationV2Error(
+                        "registered static cwd exception drifted or restarted"
+                    )
+                observed.append(static_record)
+            else:
+                dynamic_record = {
+                    **static_record,
+                    "classification": (
+                        "dynamic_monitor_connect_sleep_cwd_eacces_process"
+                    ),
+                }
+                if not seal_v2.dynamic_leaf_matches_policy(
+                    dynamic_record,
+                    policy=dynamic_policy,
+                    proc1_cgroup_sha256=live_proc1_cgroup_sha256,
+                    wrapper_start_ticks=wrapper_start_ticks,
+                ):
+                    raise AttestationV2Error(
+                        "unregistered process is outside the dynamic cwd policy"
+                    )
+                observed_dynamic_count += 1
+                if observed_dynamic_count > dynamic_policy["max_concurrent"]:
+                    raise AttestationV2Error(
+                        "dynamic cwd policy concurrent bound exceeded"
+                    )
             try:
                 if _read_stat_identity(entry) != identity_before:
                     raise AttestationV2Error(
@@ -403,16 +469,22 @@ def _scan_process_references(
         raise AttestationV2Error(
             "observed cwd exception set has missing or extra records"
         )
+    if observed_dynamic_count != dynamic_policy["required_concurrent"]:
+        raise AttestationV2Error("dynamic monitor-connect leaf is missing")
     payload = {
         "artifact_root_path": targets[2].as_posix(),
         "attempt_checkout_path": targets[0].as_posix(),
         "durable_attempt_root_path": targets[1].as_posix(),
+        "dynamic_policy_enforced": True,
         "exception_inventory_sha256": seal_v2._require_sha256(
             exception_file_sha256, "exception file SHA-256"
         ),
         "method": seal_v2.PROCESS_AUDIT_METHOD,
         "observed_exception_count": len(observed),
         "observed_exceptions_sha256": seal_v2.canonical_sha256(observed),
+        "dynamic_policy_sha256": seal_v2._require_sha256(
+            dynamic_policy_sha256, "dynamic policy SHA-256"
+        ),
         "status": "pass",
     }
     return {**payload, "audit_sha256": seal_v2.canonical_sha256(payload)}
@@ -547,6 +619,9 @@ def build_and_publish_attestation(
             attempt_checkout=attempt_checkout,
             artifact_root=artifact_root,
             exception_records=records,
+            dynamic_policy=exception["dynamic_policy"],
+            dynamic_policy_sha256=exception["dynamic_policy_sha256"],
+            wrapper_start_ticks=expectation["wrapper_start_ticks"],
             exception_file_sha256=exception_file_sha256,
             proc_root=proc_root,
             self_pid=self_pid,

@@ -3,9 +3,10 @@
 
 This standalone transport utility reads only the launch expectation and Linux
 procfs.  It daemonizes from /tmp, waits through a detachment grace period and
-requires its fork-launching parent to disappear, takes two stable snapshots at
-least one second apart, and canonically publishes only process identity/hashes.
-It never stores or prints raw argv or cgroups.
+requires its fork-launching parent to disappear, takes two snapshots at least
+one second apart, and canonically publishes an exact static set plus one bounded
+rotating monitor-connect child observation.  It never stores or prints raw argv
+or cgroups.
 """
 
 from __future__ import annotations
@@ -25,11 +26,13 @@ from pathlib import Path
 from typing import Any
 
 
-PROTOCOL = "cohort_causal_procfs_cwd_exception_inventory_v1"
-OUTPUT_FILENAME = "CAUSAL_TERMINAL_VERIFIER_PROCFS_EXCEPTION_INVENTORY_V1.json"
+PROTOCOL = "cohort_causal_procfs_cwd_exception_inventory_v2"
+OUTPUT_FILENAME = "CAUSAL_TERMINAL_VERIFIER_PROCFS_EXCEPTION_INVENTORY_V2.json"
 PROC_SUPER_MAGIC = 0x9FA0
 DETACHMENT_GRACE_SECONDS = 30
 SNAPSHOT_INTERVAL_SECONDS = 1
+DYNAMIC_POLICY_DISCOVERY_INTERVAL_SECONDS = 0.05
+DYNAMIC_POLICY_DISCOVERY_MAX_ATTEMPTS = 100
 EXPECTED_PYTHON_PATH = "/usr/bin/python3.10"
 EXPECTED_PYTHON_VERSION = "3.10.12"
 EXEC_ENV = {
@@ -92,6 +95,19 @@ TRANSPORT_PROOF_KEYS = frozenset(
 
 class FreezerError(RuntimeError):
     pass
+
+
+class DynamicPolicyDiscoveryPending(FreezerError):
+    """A single exact anchor-clone child was seen before its sleep exec."""
+
+    def __init__(
+        self,
+        static_records: list[dict[str, Any]],
+        anchor_binding: dict[str, Any],
+    ) -> None:
+        super().__init__("dynamic policy discovery observed the exact anchor clone")
+        self.static_records = static_records
+        self.anchor_binding = anchor_binding
 
 
 def _canonical(value: Any) -> bytes:
@@ -194,11 +210,30 @@ def _path_contains(candidate: Path, root: Path) -> bool:
         return candidate == root
 
 
-def _process_record(entry: Path, cmdline: bytes) -> dict[str, Any]:
+def _status_ids(entry: Path) -> tuple[list[int], list[int]]:
+    status = (entry / "status").read_bytes().splitlines()
+    uid_lines = [line for line in status if line.startswith(b"Uid:")]
+    gid_lines = [line for line in status if line.startswith(b"Gid:")]
+    if len(uid_lines) != 1 or len(gid_lines) != 1:
+        raise FreezerError("proc status has no unique Uid/Gid records")
+
+    def parse(line: bytes, label: str) -> list[int]:
+        fields = line.split()[1:]
+        if len(fields) != 4 or any(not field.isdigit() for field in fields):
+            raise FreezerError(f"proc status {label} is not four canonical IDs")
+        return [int(field) for field in fields]
+
+    return parse(uid_lines[0], "Uid"), parse(gid_lines[0], "Gid")
+
+
+def _process_record(
+    entry: Path, cmdline: bytes, *, cwd_errno: int, classification: str
+) -> dict[str, Any]:
     metadata = os.stat(entry, follow_symlinks=False)
     comm_raw = (entry / "comm").read_bytes()
     cgroup_raw = (entry / "cgroup").read_bytes()
     stat_raw = (entry / "stat").read_bytes()
+    status_uids, status_gids = _status_ids(entry)
     if not comm_raw.endswith(b"\n") or comm_raw.count(b"\n") != 1:
         raise FreezerError("proc comm is not canonical")
     try:
@@ -210,24 +245,99 @@ def _process_record(entry: Path, cmdline: bytes) -> dict[str, Any]:
         raise FreezerError("proc stat/comm identity differs")
     return {
         "cgroup_sha256": _sha(cgroup_raw),
-        # This label states only the mechanically observed evidence.  Procfs
-        # permission denial does not prove platform ownership/provenance.
-        "classification": "stable_pre_wrapper_cwd_permission_denied_process",
+        "classification": classification,
         "cmdline_sha256": _sha(cmdline),
         "cmdline_size_bytes": len(cmdline),
         "comm": comm,
+        "cwd_errno": cwd_errno,
         "gid": metadata.st_gid,
         "pid": int(entry.name),
         "ppid": ppid,
         "start_ticks": start_ticks,
+        "status_gids": status_gids,
+        "status_uids": status_uids,
         "uid": metadata.st_uid,
     }
 
 
+def _dynamic_policy(anchor: dict[str, Any], leaf: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "anchor_comm": "monitor-connect",
+        "anchor_pid": anchor["pid"],
+        "anchor_start_ticks": anchor["start_ticks"],
+        "anchor_static_record_sha256": _sha(_canonical(anchor)),
+        "classification": "dynamic_monitor_connect_sleep_cwd_eacces_direct_child_policy",
+        "direct_child_required": True,
+        "dynamic_cwd_target_absence_mechanically_proven": False,
+        "dynamic_platform_origin_mechanically_proven": False,
+        "leaf_cgroup_sha256": leaf["cgroup_sha256"],
+        "leaf_cmdline_sha256": leaf["cmdline_sha256"],
+        "leaf_cmdline_size_bytes": leaf["cmdline_size_bytes"],
+        "leaf_comm": "sleep",
+        "leaf_cwd_errno": errno.EACCES,
+        "leaf_proc_dir_gid": 0,
+        "leaf_proc_dir_uid": 0,
+        "leaf_status_gids": [0, 0, 0, 0],
+        "leaf_status_uids": [0, 0, 0, 0],
+        "literal_cmdline_target_scan_required": True,
+        "max_concurrent": 1,
+        "required_concurrent": 1,
+        "transitional_leaf_cmdline_sha256": anchor["cmdline_sha256"],
+        "transitional_leaf_cmdline_size_bytes": anchor["cmdline_size_bytes"],
+        "transitional_leaf_comm": "monitor-connect",
+    }
+
+
+def _anchor_binding(anchor: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "pid": anchor["pid"],
+        "start_ticks": anchor["start_ticks"],
+        "static_record_sha256": _sha(_canonical(anchor)),
+    }
+
+
+def _matches_dynamic_leaf(
+    record: dict[str, Any],
+    *,
+    policy: dict[str, Any],
+    proc1_cgroup_sha256: str,
+    wrapper_start_ticks: int,
+) -> bool:
+    exact_profile = (
+        record["comm"] == policy["leaf_comm"] == "sleep"
+        and record["cmdline_sha256"] == policy["leaf_cmdline_sha256"]
+        and record["cmdline_size_bytes"] == policy["leaf_cmdline_size_bytes"]
+    ) or (
+        record["comm"] == policy["transitional_leaf_comm"] == "monitor-connect"
+        and record["cmdline_sha256"] == policy["transitional_leaf_cmdline_sha256"]
+        and record["cmdline_size_bytes"]
+        == policy["transitional_leaf_cmdline_size_bytes"]
+    )
+    return (
+        record["classification"] == "dynamic_monitor_connect_sleep_cwd_eacces_process"
+        and record["ppid"] == policy["anchor_pid"]
+        and exact_profile
+        and record["cmdline_size_bytes"] > 0
+        and record["start_ticks"] >= wrapper_start_ticks
+        and record["uid"] == record["gid"] == 0
+        and record["status_uids"] == record["status_gids"] == [0, 0, 0, 0]
+        and record["cgroup_sha256"]
+        == policy["leaf_cgroup_sha256"]
+        == proc1_cgroup_sha256
+        and record["cwd_errno"] == policy["leaf_cwd_errno"] == errno.EACCES
+    )
+
+
 def _scan(
-    *, proc_root: Path, targets: tuple[Path, ...], self_pid: int
-) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
+    *,
+    proc_root: Path,
+    targets: tuple[Path, ...],
+    self_pid: int,
+    wrapper_start_ticks: int,
+    proc1_cgroup_sha256: str,
+    frozen_dynamic_policy: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    denied: list[dict[str, Any]] = []
     for entry in sorted(
         (item for item in proc_root.iterdir() if item.name.isdigit()),
         key=lambda item: int(item.name),
@@ -254,7 +364,16 @@ def _scan(
                     "a process cwd failed outside the allowed errno"
                 ) from exc
             try:
-                records.append(_process_record(entry, cmdline))
+                denied.append(
+                    _process_record(
+                        entry,
+                        cmdline,
+                        cwd_errno=exc.errno,
+                        classification=(
+                            "stable_pre_wrapper_cwd_permission_denied_process"
+                        ),
+                    )
+                )
                 after = _parse_stat((entry / "stat").read_bytes())
             except FileNotFoundError as vanished:
                 raise FreezerError(
@@ -271,7 +390,130 @@ def _scan(
             continue
         if after != before:
             raise FreezerError("process identity changed during snapshot")
-    return records
+    anchors = [
+        record
+        for record in denied
+        if record["comm"] == "monitor-connect"
+        and record["start_ticks"] < wrapper_start_ticks
+    ]
+    if frozen_dynamic_policy is None:
+        pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for anchor in anchors:
+            for record in denied:
+                candidate = {
+                    **record,
+                    "classification": (
+                        "dynamic_monitor_connect_sleep_cwd_eacces_process"
+                    ),
+                }
+                provisional = _dynamic_policy(anchor, candidate)
+                if record["comm"] == "sleep" and _matches_dynamic_leaf(
+                    candidate,
+                    policy=provisional,
+                    proc1_cgroup_sha256=proc1_cgroup_sha256,
+                    wrapper_start_ticks=wrapper_start_ticks,
+                ):
+                    pairs.append((anchor, candidate))
+        if not pairs:
+            transition_pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
+            for anchor in anchors:
+                for record in denied:
+                    candidate = {
+                        **record,
+                        "classification": (
+                            "dynamic_monitor_connect_sleep_cwd_eacces_process"
+                        ),
+                    }
+                    provisional = _dynamic_policy(anchor, candidate)
+                    if record["comm"] == "monitor-connect" and _matches_dynamic_leaf(
+                        candidate,
+                        policy=provisional,
+                        proc1_cgroup_sha256=proc1_cgroup_sha256,
+                        wrapper_start_ticks=wrapper_start_ticks,
+                    ):
+                        transition_pairs.append((anchor, candidate))
+            if len(transition_pairs) == 1:
+                transition_anchor, transition_leaf = transition_pairs[0]
+                static_during_discovery = [
+                    record
+                    for record in denied
+                    if record["pid"] != transition_leaf["pid"]
+                ]
+                if (
+                    len(static_during_discovery) + 1 == len(denied)
+                    and all(
+                        record["start_ticks"] < wrapper_start_ticks
+                        for record in static_during_discovery
+                    )
+                    and any(
+                        record["pid"] == transition_anchor["pid"]
+                        and record["start_ticks"] == transition_anchor["start_ticks"]
+                        and _sha(_canonical(record))
+                        == _sha(_canonical(transition_anchor))
+                        for record in static_during_discovery
+                    )
+                ):
+                    static_during_discovery.sort(
+                        key=lambda record: (record["pid"], record["start_ticks"])
+                    )
+                    raise DynamicPolicyDiscoveryPending(
+                        static_during_discovery,
+                        _anchor_binding(transition_anchor),
+                    )
+        if len(pairs) != 1:
+            raise FreezerError("need exactly one monitor-connect/sleep dynamic pair")
+        anchor, dynamic_leaf = pairs[0]
+        policy = _dynamic_policy(anchor, dynamic_leaf)
+    else:
+        policy = frozen_dynamic_policy
+        matching_anchors = [
+            record
+            for record in anchors
+            if record["pid"] == policy["anchor_pid"]
+            and record["start_ticks"] == policy["anchor_start_ticks"]
+            and record["comm"] == policy["anchor_comm"] == "monitor-connect"
+            and _sha(_canonical(record)) == policy["anchor_static_record_sha256"]
+        ]
+        if len(matching_anchors) != 1:
+            raise FreezerError("dynamic anchor identity or exact static record drifted")
+        anchor = matching_anchors[0]
+        candidates = [
+            {
+                **record,
+                "classification": "dynamic_monitor_connect_sleep_cwd_eacces_process",
+            }
+            for record in denied
+            if record["pid"] != anchor["pid"]
+        ]
+        leaves = [
+            record
+            for record in candidates
+            if _matches_dynamic_leaf(
+                record,
+                policy=policy,
+                proc1_cgroup_sha256=proc1_cgroup_sha256,
+                wrapper_start_ticks=wrapper_start_ticks,
+            )
+        ]
+        if len(leaves) != 1:
+            raise FreezerError("dynamic monitor-connect leaf count or binding differs")
+        dynamic_leaf = leaves[0]
+
+    dynamic_pids = {dynamic_leaf["pid"]}
+    static_records = [record for record in denied if record["pid"] not in dynamic_pids]
+    if any(record["start_ticks"] >= wrapper_start_ticks for record in static_records):
+        raise FreezerError("a static cwd exception did not predate the causal wrapper")
+    if not any(
+        record["pid"] == policy["anchor_pid"]
+        and record["start_ticks"] == policy["anchor_start_ticks"]
+        and _sha(_canonical(record)) == policy["anchor_static_record_sha256"]
+        for record in static_records
+    ):
+        raise FreezerError("dynamic anchor is not an exact static exception")
+    if len(static_records) + 1 != len(denied):
+        raise FreezerError("dynamic policy classified more than one process")
+    static_records.sort(key=lambda record: (record["pid"], record["start_ticks"]))
+    return static_records, [dynamic_leaf], policy
 
 
 def _runtime_namespace(proc_root: Path) -> dict[str, Any]:
@@ -292,6 +534,7 @@ def _runtime_namespace(proc_root: Path) -> dict[str, Any]:
     proc1_ppid, proc1_start, proc1_comm = _parse_stat(
         (proc_root / "1/stat").read_bytes()
     )
+    proc1_cgroup_raw = (proc_root / "1/cgroup").read_bytes()
     self_raw = (proc_root / "self/stat").read_bytes()
     self_pid_raw = self_raw.split(b" ", 1)[0]
     if proc1_ppid != 0 or int(self_pid_raw) != os.getpid():
@@ -300,6 +543,7 @@ def _runtime_namespace(proc_root: Path) -> dict[str, Any]:
         "boot_id": (proc_root / "sys/kernel/random/boot_id").read_text().strip(),
         "mount_namespace_inode": os.stat(proc_root / "self/ns/mnt").st_ino,
         "pid_namespace_inode": os.stat(proc_root / "self/ns/pid").st_ino,
+        "proc1_cgroup_sha256": _sha(proc1_cgroup_raw),
         "proc1_comm_sha256": proc1_comm,
         "proc1_start_ticks": proc1_start,
         "proc_mountinfo_sha256": _sha(matches[0]),
@@ -582,21 +826,77 @@ def freeze(
         raise FreezerError("freezer source and cwd must be under /tmp")
     targets = (checkout, durable, artifact)
     namespace_1 = namespace_fn(proc_root)
-    records_1 = scan_fn(proc_root=proc_root, targets=targets, self_pid=os.getpid())
+    discovery_static_digest: str | None = None
+    discovery_anchor_binding: dict[str, Any] | None = None
+    for discovery_attempt in range(DYNAMIC_POLICY_DISCOVERY_MAX_ATTEMPTS):
+        try:
+            records_1, dynamic_1, dynamic_policy = scan_fn(
+                proc_root=proc_root,
+                targets=targets,
+                self_pid=os.getpid(),
+                wrapper_start_ticks=expectation["wrapper_start_ticks"],
+                proc1_cgroup_sha256=namespace_1["proc1_cgroup_sha256"],
+                frozen_dynamic_policy=None,
+            )
+        except DynamicPolicyDiscoveryPending as exc:
+            current_static_digest = _sha(_canonical(exc.static_records))
+            if discovery_static_digest is None:
+                discovery_static_digest = current_static_digest
+            elif current_static_digest != discovery_static_digest:
+                raise FreezerError(
+                    "static exceptions drifted during dynamic policy discovery"
+                ) from exc
+            if discovery_anchor_binding is None:
+                discovery_anchor_binding = exc.anchor_binding
+            elif exc.anchor_binding != discovery_anchor_binding:
+                raise FreezerError(
+                    "exact anchor drifted during dynamic policy discovery"
+                ) from exc
+            if discovery_attempt + 1 >= DYNAMIC_POLICY_DISCOVERY_MAX_ATTEMPTS:
+                raise FreezerError(
+                    "dynamic policy discovery exhausted its bounded retry budget"
+                ) from exc
+            sleep_fn(DYNAMIC_POLICY_DISCOVERY_INTERVAL_SECONDS)
+            continue
+        break
+    else:  # pragma: no cover - the bounded loop exits or raises above
+        raise AssertionError("unreachable dynamic policy discovery state")
+    if (
+        discovery_static_digest is not None
+        and _sha(_canonical(records_1)) != discovery_static_digest
+    ):
+        raise FreezerError("static exceptions drifted before registered snapshot one")
+    if discovery_anchor_binding is not None and discovery_anchor_binding != {
+        "pid": dynamic_policy["anchor_pid"],
+        "start_ticks": dynamic_policy["anchor_start_ticks"],
+        "static_record_sha256": dynamic_policy["anchor_static_record_sha256"],
+    }:
+        raise FreezerError("exact anchor drifted before registered snapshot one")
     captured_1 = now_fn()
     boottime_1 = boottime_ns_fn()
     sleep_fn(SNAPSHOT_INTERVAL_SECONDS)
-    records_2 = scan_fn(proc_root=proc_root, targets=targets, self_pid=os.getpid())
+    records_2, dynamic_2, observed_policy_2 = scan_fn(
+        proc_root=proc_root,
+        targets=targets,
+        self_pid=os.getpid(),
+        wrapper_start_ticks=expectation["wrapper_start_ticks"],
+        proc1_cgroup_sha256=namespace_1["proc1_cgroup_sha256"],
+        frozen_dynamic_policy=dynamic_policy,
+    )
     captured_2 = now_fn()
     boottime_2 = boottime_ns_fn()
     namespace_2 = namespace_fn(proc_root)
-    if _canonical(records_1) != _canonical(records_2) or namespace_1 != namespace_2:
-        raise FreezerError("procfs exception snapshots or namespace differ")
+    if (
+        _canonical(records_1) != _canonical(records_2)
+        or observed_policy_2 != dynamic_policy
+        or namespace_1 != namespace_2
+    ):
+        raise FreezerError("static procfs exceptions, policy, or namespace differ")
     if boottime_2 - boottime_1 < 1_000_000_000:
         raise FreezerError("procfs snapshots lack one second of boottime separation")
     wrapper_start = expectation["wrapper_start_ticks"]
     if any(record["start_ticks"] >= wrapper_start for record in records_1):
-        raise FreezerError("a cwd exception did not predate the causal wrapper")
+        raise FreezerError("a static cwd exception did not predate the causal wrapper")
     if (
         not isinstance(transport_proof, dict)
         or set(transport_proof) != TRANSPORT_PROOF_KEYS
@@ -605,15 +905,23 @@ def freeze(
         or transport_proof["process_start_ticks"] <= wrapper_start
     ):
         raise FreezerError("freezer detached proof does not postdate the wrapper")
-    digest = _sha(_canonical(records_1))
+    static_digest = _sha(_canonical(records_1))
+    dynamic_policy_digest = _sha(_canonical(dynamic_policy))
+    inventory_digest = _sha(
+        _canonical({"dynamic_policy": dynamic_policy, "static_records": records_1})
+    )
+    dynamic_digest_1 = _sha(_canonical(dynamic_1))
+    dynamic_digest_2 = _sha(_canonical(dynamic_2))
     inventory = {
+        "dynamic_policy": dynamic_policy,
+        "dynamic_policy_sha256": dynamic_policy_digest,
         "freezer": {
             "path": source.as_posix(),
             "sha256": _sha(source_raw),
             **transport_proof,
         },
         "frozen_at_utc": now_fn(),
-        "inventory_sha256": digest,
+        "inventory_sha256": inventory_digest,
         "launch_expectation": {
             "path": launch_expectation_path.as_posix(),
             "sha256": _sha(expectation_raw),
@@ -621,24 +929,31 @@ def freeze(
         "outcome_blind": True,
         "protocol": PROTOCOL,
         "runtime_namespace": namespace_1,
-        "schema_version": 1,
+        "schema_version": 2,
         "semantic_artifacts_opened": False,
+        "static_records_sha256": static_digest,
         "snapshots": [
             {
                 "captured_at_utc": captured_1,
                 "captured_boottime_ns": boottime_1,
-                "record_count": len(records_1),
-                "records": records_1,
-                "records_sha256": digest,
+                "dynamic_observation_count": len(dynamic_1),
+                "dynamic_observations": dynamic_1,
+                "dynamic_observations_sha256": dynamic_digest_1,
                 "sequence": 1,
+                "static_record_count": len(records_1),
+                "static_records": records_1,
+                "static_records_sha256": static_digest,
             },
             {
                 "captured_at_utc": captured_2,
                 "captured_boottime_ns": boottime_2,
-                "record_count": len(records_2),
-                "records": records_2,
-                "records_sha256": digest,
+                "dynamic_observation_count": len(dynamic_2),
+                "dynamic_observations": dynamic_2,
+                "dynamic_observations_sha256": dynamic_digest_2,
                 "sequence": 2,
+                "static_record_count": len(records_2),
+                "static_records": records_2,
+                "static_records_sha256": static_digest,
             },
         ],
         "status": "frozen_blinded",

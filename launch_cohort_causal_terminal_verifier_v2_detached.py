@@ -304,6 +304,7 @@ def _runtime_namespace_identity() -> dict[str, Any]:
     proc1_ppid, proc1_start, _, proc1_comm = _parse_stat(
         Path("/proc/1/stat").read_bytes()
     )
+    proc1_cgroup_raw = Path("/proc/1/cgroup").read_bytes()
     self_pid_raw = Path("/proc/self/stat").read_bytes().split(b" ", 1)[0]
     if (
         proc1_ppid != 0
@@ -315,6 +316,7 @@ def _runtime_namespace_identity() -> dict[str, Any]:
         "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
         "mount_namespace_inode": os.stat("/proc/self/ns/mnt").st_ino,
         "pid_namespace_inode": os.stat("/proc/self/ns/pid").st_ino,
+        "proc1_cgroup_sha256": _sha(proc1_cgroup_raw),
         "proc1_comm_sha256": proc1_comm,
         "proc1_start_ticks": proc1_start,
         "proc_mountinfo_sha256": _sha(matches[0]),
