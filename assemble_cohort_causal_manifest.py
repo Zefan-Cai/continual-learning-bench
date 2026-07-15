@@ -6,9 +6,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
-import stat
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +27,7 @@ from validate_cohort_causal_results import (
     PREREGISTRATION_FILENAME,
     SCHEMA_VERSION,
     STATISTICAL_ADDENDUM_FILENAME,
+    _publish_no_overwrite,
     canonical_sha256,
     tape_item_sha256,
     tape_sha256,
@@ -37,10 +35,6 @@ from validate_cohort_causal_results import (
 
 
 def _atomic_write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    parent = path.parent.lstat()
-    if not stat.S_ISDIR(parent.st_mode) or path.parent.is_symlink():
-        raise ValueError("formal manifest parent must be a real directory")
     encoded = (
         json.dumps(
             payload,
@@ -51,29 +45,7 @@ def _atomic_write_json(path: Path, payload: Any) -> None:
         ).encode("utf-8")
         + b"\n"
     )
-    descriptor, temporary_name = tempfile.mkstemp(
-        dir=path.parent, prefix=f".{path.name}.tmp.publish."
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(encoded)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.link(temporary, path)
-        directory_fd = os.open(
-            path.parent,
-            os.O_RDONLY
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_DIRECTORY", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
-        )
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    finally:
-        temporary.unlink(missing_ok=True)
+    _publish_no_overwrite(path, encoded)
 
 
 def _load_json(path: Path) -> dict[str, Any]:

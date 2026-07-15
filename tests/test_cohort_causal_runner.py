@@ -11,12 +11,18 @@ from types import SimpleNamespace
 import pytest
 
 import run_cohort_causal as runner
+import validate_cohort_causal_results as validator
 from validate_cohort_causal_results import EXPECTED_STATISTICAL_ADDENDUM_SHA256
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HASH_A = "a" * 64
 HASH_B = "b" * 64
+
+
+@pytest.fixture(autouse=True)
+def _fast_publication_fence(monkeypatch):
+    monkeypatch.setattr(validator, "PUBLISHED_STABILITY_SECONDS", 0.0)
 
 
 @dataclass
@@ -143,17 +149,13 @@ def fake_run_task(task, system, *, trace_recorder, before_observe=None, **kwargs
                 1,
                 query,
                 SimpleNamespace(metadata={}),
-                SimpleNamespace(
-                    observation=SimpleNamespace(instance_complete=False)
-                ),
+                SimpleNamespace(observation=SimpleNamespace(instance_complete=False)),
             )
             before_observe(
                 2,
                 query,
                 SimpleNamespace(metadata={}),
-                SimpleNamespace(
-                    observation=SimpleNamespace(instance_complete=True)
-                ),
+                SimpleNamespace(observation=SimpleNamespace(instance_complete=True)),
             )
         trace_recorder.interactions.append(
             {
@@ -214,9 +216,7 @@ def bindings():
 def smoke_grid(tmp_path):
     grid = json.loads((REPO_ROOT / "grid_cohort_causal_smoke.json").read_text())
     for role in ("adaptation", "heldout"):
-        grid["datasets"][role]["path"] = str(
-            REPO_ROOT / grid["datasets"][role]["path"]
-        )
+        grid["datasets"][role]["path"] = str(REPO_ROOT / grid["datasets"][role]["path"])
     for row in [*grid["collectors"], *grid["evaluation_cells"]]:
         row["task_params"]["dataset_path"] = str(
             REPO_ROOT / row["task_params"]["dataset_path"]
@@ -252,17 +252,14 @@ def test_dataset_projection_uses_checked_in_builder_manifest():
     adaptation = runner._dataset_projection(REPO_ROOT, grid, "adaptation")
     heldout = runner._dataset_projection(REPO_ROOT, grid, "heldout")
 
-    assert adaptation["aggregate_sha256"] == grid["datasets"]["adaptation"][
-        "corpus_sha256"
-    ]
-    assert heldout["aggregate_sha256"] == grid["datasets"]["heldout"][
-        "corpus_sha256"
-    ]
+    assert (
+        adaptation["aggregate_sha256"]
+        == grid["datasets"]["adaptation"]["corpus_sha256"]
+    )
+    assert heldout["aggregate_sha256"] == grid["datasets"]["heldout"]["corpus_sha256"]
     assert len(adaptation["canonical_instance_ids"]) == 20
     assert len(heldout["canonical_instance_ids"]) == 20
-    assert adaptation["canonical_instance_ids"] != heldout[
-        "canonical_instance_ids"
-    ]
+    assert adaptation["canonical_instance_ids"] != heldout["canonical_instance_ids"]
     assert adaptation["database_sha256"] != heldout["database_sha256"]
     assert adaptation["used_for_updates"] is True
     assert heldout["never_updated"] is True
@@ -321,9 +318,7 @@ def test_replay_restores_freezes_and_writes_validator_cell(
         bindings=bindings,
         provenance=provenance,
     )
-    cfg = next(
-        row for row in smoke_grid["evaluation_cells"] if row["arm"] == "active"
-    )
+    cfg = next(row for row in smoke_grid["evaluation_cells"] if row["arm"] == "active")
     cell = runner.run_replay_eval(
         root=tmp_path,
         grid=smoke_grid,
@@ -344,9 +339,7 @@ def test_replay_restores_freezes_and_writes_validator_cell(
     }
     assert cell["integrity_counters"]["fallbacks"] == 0
     assert len(cell["heldout_outcomes"]) == 2
-    expected_score = statistics.mean(
-        row["reward"] for row in cell["heldout_outcomes"]
-    )
+    expected_score = statistics.mean(row["reward"] for row in cell["heldout_outcomes"])
     assert cell["score"] == expected_score
     assert cell["score"] != round(cell["score"], 6)
     assert (tmp_path / cfg["cell_manifest_path"]).is_file()
@@ -384,6 +377,16 @@ def test_launcher_defaults_avoid_known_occupied_gpu_one():
     assert 'EVAL_GPUS="0,1' not in text
     assert 'PYTHONHASHSEED="$run_seed"' in text
     assert 'print(matches[0]["run_seed"])' in text
+    collector = 'run_phase "$COLLECTOR_IDS_CSV" "$COLLECTOR_GPUS"'
+    collector_fence = "--section collectors"
+    evaluation = 'run_phase "$EVAL_IDS_CSV" "$EVAL_GPUS"'
+    evaluation_fence = "--section evaluation_cells"
+    assembly = 'python "$ROOT/assemble_cohort_causal_manifest.py"'
+    assert text.index(collector) < text.index(collector_fence)
+    assert text.index(collector_fence) < text.index(evaluation)
+    assert text.index(evaluation) < text.index(evaluation_fence)
+    assert text.index(evaluation_fence) < text.index(assembly)
+    assert '--output "$DECISION_REPORT" \\\n    >/dev/null' in text
 
 
 def test_main_reverifies_provenance_before_loading_runtime(

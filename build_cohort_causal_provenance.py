@@ -11,12 +11,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import platform
 import re
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +29,7 @@ from validate_cohort_causal_results import (  # noqa: E402
     EXPECTED_STATISTICAL_ADDENDUM_SHA256,
     PREREGISTERED_PARENT_COMMIT,
     STATISTICAL_ADDENDUM_FILENAME,
+    _publish_no_overwrite,
 )
 
 
@@ -42,6 +41,7 @@ AUDIT_KIND = "cohort_causal_provenance_audit"
 # evaluation-affecting code must be an explicit provenance-contract change.
 EVALUATION_CODE_ALLOWLIST = (
     "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V1.md",
+    "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V2.md",
     "COHORT_QONLY_CAUSAL_PREREG.md",
     "COHORT_QONLY_CAUSAL_STATISTICAL_ADDENDUM_V1.md",
     "assemble_cohort_causal_manifest.py",
@@ -77,6 +77,7 @@ EVALUATION_CODE_ALLOWLIST = (
     "src/usage.py",
     "validate_cohort_causal_results.py",
     "validate_cohort_causal_smoke.py",
+    "wait_cohort_causal_phase_outputs.py",
 )
 
 _MODEL_CONFIG_NAMES = {"config.json", "generation_config.json"}
@@ -516,35 +517,12 @@ def verify_current_provenance(
 
 
 def _publish_atomic_no_overwrite(path: Path, payload: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        dir=path.parent, prefix=f".{path.name}.tmp."
-    )
-    temporary = Path(temporary_name)
-    linked = False
     try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        try:
-            os.link(temporary, path)
-            linked = True
-        except FileExistsError as exc:
-            raise FileExistsError(
-                f"refusing to overwrite provenance artifact: {path}"
-            ) from exc
-        directory_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    except BaseException:
-        if linked:
-            path.unlink(missing_ok=True)
-        raise
-    finally:
-        temporary.unlink(missing_ok=True)
+        _publish_no_overwrite(path, payload)
+    except FileExistsError as exc:
+        raise FileExistsError(
+            f"refusing to overwrite provenance artifact: {path}"
+        ) from exc
 
 
 def write_provenance_bundle(
@@ -568,11 +546,7 @@ def write_provenance_bundle(
     details_payload = _canonical_bytes(details) + b"\n"
     provenance_payload = _canonical_bytes(provenance) + b"\n"
     _publish_atomic_no_overwrite(details_output, details_payload)
-    try:
-        _publish_atomic_no_overwrite(output, provenance_payload)
-    except BaseException:
-        details_output.unlink(missing_ok=True)
-        raise
+    _publish_atomic_no_overwrite(output, provenance_payload)
 
 
 def _default_details_path(output: Path) -> Path:

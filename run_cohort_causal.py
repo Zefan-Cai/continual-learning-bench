@@ -28,6 +28,7 @@ from validate_cohort_causal_results import (
     LIMITATION,
     MECHANISM_LABEL,
     PREREGISTERED_PARENT_COMMIT,
+    _publish_no_overwrite,
     canonical_sha256,
     corpus_projection_from_dataset_manifest,
     masked_pair_config_sha256,
@@ -107,13 +108,7 @@ def _sha256_file(path: Path) -> str:
 
 
 def _atomic_write_bytes(path: Path, payload: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
-    with temporary.open("xb") as handle:
-        handle.write(payload)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(temporary, path)
+    _publish_no_overwrite(path, payload)
 
 
 def _atomic_write_json(path: Path, payload: Any) -> None:
@@ -216,7 +211,9 @@ def _dataset_projection(root: Path, grid: dict[str, Any], role: str) -> dict[str
             raise ValueError(f"{role} dataset artifact entry is malformed")
         artifact_path = dataset_dir / artifact["path"]
         if not artifact_path.is_file():
-            raise FileNotFoundError(f"{role} dataset artifact is missing: {artifact_path}")
+            raise FileNotFoundError(
+                f"{role} dataset artifact is missing: {artifact_path}"
+            )
         if artifact_path.stat().st_size != artifact.get("size_bytes"):
             raise ValueError(f"{role} dataset artifact size drift: {artifact_path}")
         if _sha256_file(artifact_path) != artifact.get("sha256"):
@@ -323,7 +320,9 @@ def _assert_outcome_order_matches_corpus(
     observed = [row.instance_id for row in result.instance_outcomes]
     expected = corpus["canonical_instance_ids"][:expected_count]
     if observed != expected:
-        raise RuntimeError("runtime outcome IDs/order differ from frozen corpus manifest")
+        raise RuntimeError(
+            "runtime outcome IDs/order differ from frozen corpus manifest"
+        )
 
 
 def _finalize_trace(recorder: Any, result: Any, path: Path) -> dict[str, Any]:
@@ -394,20 +393,26 @@ def _heldout_rows(
         "parse_retries": sum(row["integrity"]["parse_retries"] for row in rows),
         "repairs": sum(row["integrity"]["repairs"] for row in rows),
     }
-    if any(counters[key] for key in (
-        "synthetic_outcomes",
-        "timed_out_outcomes",
-        "fallbacks",
-        "missing_outcomes",
-        "hard_schema_failures",
-    )):
+    if any(
+        counters[key]
+        for key in (
+            "synthetic_outcomes",
+            "timed_out_outcomes",
+            "fallbacks",
+            "missing_outcomes",
+            "hard_schema_failures",
+        )
+    ):
         raise RuntimeError("held-out integrity gate failed; refusing cell manifest")
     return rows, counters
 
 
 def load_provenance(path: Path) -> dict[str, Any]:
     provenance = json.loads(path.read_text())
-    if not isinstance(provenance, dict) or set(provenance) != REQUIRED_PROVENANCE_FIELDS:
+    if (
+        not isinstance(provenance, dict)
+        or set(provenance) != REQUIRED_PROVENANCE_FIELDS
+    ):
         raise ValueError(
             "provenance JSON must contain exactly: "
             + ", ".join(sorted(REQUIRED_PROVENANCE_FIELDS))
@@ -415,11 +420,14 @@ def load_provenance(path: Path) -> dict[str, Any]:
     sha_fields = {
         key
         for key in REQUIRED_PROVENANCE_FIELDS
-        if key.endswith("_sha256") or key in {"source_commit", "preregistered_parent_commit"}
+        if key.endswith("_sha256")
+        or key in {"source_commit", "preregistered_parent_commit"}
     }
     for key in sha_fields:
         value = provenance[key]
-        expected_length = 40 if key in {"source_commit", "preregistered_parent_commit"} else 64
+        expected_length = (
+            40 if key in {"source_commit", "preregistered_parent_commit"} else 64
+        )
         if (
             not isinstance(value, str)
             or len(value) != expected_length
@@ -441,9 +449,10 @@ def run_collection(
 ) -> dict[str, Any]:
     if cfg.get("mode") != "collect_tape" or cfg.get("arm") != "collector_lr0":
         raise ValueError("collection requires a collector_lr0 grid row")
-    if cfg["system_params"].get("ttt_lr") != 0.0 or cfg["system_params"].get(
-        "reward_pg_lr"
-    ) != 0.0:
+    if (
+        cfg["system_params"].get("ttt_lr") != 0.0
+        or cfg["system_params"].get("reward_pg_lr") != 0.0
+    ):
         raise ValueError("frozen-tape collector learning rates must both be zero")
     _assert_run_seed_contract(cfg)
     if provenance["model_path"] != cfg["system_params"]["model_path"]:
@@ -471,7 +480,9 @@ def run_collection(
     )
     items: list[dict[str, Any]] = []
 
-    def capture_terminal(_step: int, query: Any, response: Any, step_result: Any) -> None:
+    def capture_terminal(
+        _step: int, query: Any, response: Any, step_result: Any
+    ) -> None:
         observation = step_result.observation
         if not bool(getattr(observation, "instance_complete", False)):
             return
@@ -618,7 +629,9 @@ def run_replay_eval(
     _assert_outcome_order_matches_corpus(result, heldout, expected)
     trace = _finalize_trace(recorder, result, trace_path)
     if system.current_trainable_param_sha256() != frozen_hash:
-        raise RuntimeError("held-out evaluation or trace finalization changed parameters")
+        raise RuntimeError(
+            "held-out evaluation or trace finalization changed parameters"
+        )
     outcomes, counters = _heldout_rows(trace, result)
 
     adaptation = _dataset_projection(root, grid, "adaptation")

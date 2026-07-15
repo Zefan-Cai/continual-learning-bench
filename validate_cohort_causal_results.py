@@ -16,6 +16,7 @@ outcome is publication-grade without the separately preregistered confirmation.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import math
@@ -23,10 +24,188 @@ import os
 import random
 import stat
 import statistics
+import sys
 import tempfile
+import time
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+
+
+PUBLISHED_VISIBILITY_TIMEOUT_SECONDS = 60.0
+PUBLISHED_STABILITY_SECONDS = 1.0
+PUBLISHED_POLL_SECONDS = 0.25
+
+
+class PublicationVisibilityError(RuntimeError):
+    """A durable no-overwrite pathname did not reach a safe stable view."""
+
+
+class _VisibilityPending(RuntimeError):
+    """A bounded publication transition has not reached a stable view yet."""
+
+
+def _stat_identity(info: os.stat_result) -> tuple[int, ...]:
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_nlink,
+        info.st_uid,
+        info.st_gid,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
+
+
+def _stable_file_snapshot(path: Path, label: str) -> tuple[bytes, os.stat_result]:
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink not in {1, 2}:
+            raise PublicationVisibilityError(
+                f"{label} is not a nonempty single-link regular file"
+            )
+        if before.st_size <= 0 or before.st_nlink == 2:
+            raise _VisibilityPending(
+                f"{label} is not a nonempty single-link regular file"
+            )
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    pathname = path.lstat()
+    if (
+        _stat_identity(before) != _stat_identity(after)
+        or _stat_identity(after) != _stat_identity(pathname)
+        or stat.S_ISLNK(pathname.st_mode)
+    ):
+        raise _VisibilityPending(f"{label} changed during stable read")
+    payload = b"".join(chunks)
+    if len(payload) != after.st_size:
+        raise _VisibilityPending(f"{label} size changed during stable read")
+    return payload, after
+
+
+def _retryable_visibility_leaf(
+    path: Path, label: str, *, expected_inode: tuple[int, int] | None
+) -> None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        if exc.errno in {errno.ENOENT, errno.ESTALE}:
+            return
+        raise PublicationVisibilityError(f"{label} metadata read failed") from exc
+    if (
+        stat.S_ISLNK(info.st_mode)
+        or not stat.S_ISREG(info.st_mode)
+        or info.st_nlink not in {1, 2}
+        or (expected_inode is not None and (info.st_dev, info.st_ino) != expected_inode)
+    ):
+        raise PublicationVisibilityError(
+            f"{label} visibility failure is not a publication transient"
+        )
+
+
+def _wait_for_stable_file(
+    path: Path,
+    label: str,
+    *,
+    expected_payload: bytes | None = None,
+    expected_inode: tuple[int, int] | None = None,
+    maximum_wait_seconds: float | None = None,
+    stability_seconds: float | None = None,
+    poll_seconds: float | None = None,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    monotonic_fn: Callable[[], float] = time.monotonic,
+) -> bytes:
+    maximum_wait_seconds = (
+        PUBLISHED_VISIBILITY_TIMEOUT_SECONDS
+        if maximum_wait_seconds is None
+        else maximum_wait_seconds
+    )
+    stability_seconds = (
+        PUBLISHED_STABILITY_SECONDS if stability_seconds is None else stability_seconds
+    )
+    poll_seconds = PUBLISHED_POLL_SECONDS if poll_seconds is None else poll_seconds
+    if maximum_wait_seconds <= 0 or stability_seconds < 0 or poll_seconds <= 0:
+        raise PublicationVisibilityError("publication visibility timing is invalid")
+    deadline = monotonic_fn() + maximum_wait_seconds
+    previous: tuple[tuple[int, ...], str] | None = None
+    previous_at: float | None = None
+    observed_inode: tuple[int, int] | None = expected_inode
+    observed_sample: tuple[tuple[int, ...], str] | None = None
+    last_error: BaseException | None = None
+    while True:
+        try:
+            raw, info = _stable_file_snapshot(path, label)
+        except FileNotFoundError as exc:
+            last_error = exc
+            previous = None
+            previous_at = None
+            _retryable_visibility_leaf(path, label, expected_inode=observed_inode)
+        except OSError as exc:
+            if exc.errno not in {errno.ENOENT, errno.ESTALE}:
+                raise PublicationVisibilityError(f"{label} open failed") from exc
+            last_error = exc
+            previous = None
+            previous_at = None
+            _retryable_visibility_leaf(path, label, expected_inode=observed_inode)
+        except _VisibilityPending as exc:
+            last_error = exc
+            previous = None
+            previous_at = None
+            _retryable_visibility_leaf(path, label, expected_inode=observed_inode)
+        else:
+            inode = (info.st_dev, info.st_ino)
+            if observed_inode is not None and inode != observed_inode:
+                raise PublicationVisibilityError(f"{label} published inode differs")
+            if expected_payload is not None and raw != expected_payload:
+                raise PublicationVisibilityError(f"{label} published bytes differ")
+            sample = (_stat_identity(info), hashlib.sha256(raw).hexdigest())
+            now = monotonic_fn()
+            if now > deadline:
+                break
+            if observed_inode is None:
+                observed_inode = inode
+            if observed_sample is None:
+                observed_sample = sample
+            elif sample != observed_sample:
+                raise PublicationVisibilityError(
+                    f"{label} changed between visibility snapshots"
+                )
+            if previous == sample and previous_at is not None:
+                elapsed = now - previous_at
+                if elapsed >= stability_seconds:
+                    return raw
+                delay = stability_seconds - elapsed
+            else:
+                previous = sample
+                previous_at = now
+                delay = stability_seconds
+            last_error = None
+            if delay > max(0.0, deadline - now):
+                break
+            sleep_fn(delay)
+            continue
+        now = monotonic_fn()
+        if now >= deadline:
+            break
+        sleep_fn(min(poll_seconds, max(0.0, deadline - now)))
+    raise PublicationVisibilityError(
+        f"{label} did not become stably visible"
+    ) from last_error
 
 
 def _publish_no_overwrite(path: Path, payload: bytes) -> None:
@@ -38,12 +217,17 @@ def _publish_no_overwrite(path: Path, payload: bytes) -> None:
         dir=path.parent, prefix=f".{path.name}.tmp.publish."
     )
     temporary = Path(temporary_name)
+    expected_inode: tuple[int, int] | None = None
+    linked = False
     try:
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
+            info = os.fstat(handle.fileno())
+            expected_inode = (info.st_dev, info.st_ino)
         os.link(temporary, path)
+        linked = True
         directory_fd = os.open(
             path.parent,
             os.O_RDONLY
@@ -57,6 +241,26 @@ def _publish_no_overwrite(path: Path, payload: bytes) -> None:
             os.close(directory_fd)
     finally:
         temporary.unlink(missing_ok=True)
+        if linked:
+            directory_fd = os.open(
+                path.parent,
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+    if expected_inode is None:
+        raise AssertionError("publication inode was not captured")
+    _wait_for_stable_file(
+        path,
+        "published artifact",
+        expected_payload=payload,
+        expected_inode=expected_inode,
+    )
 
 
 SCHEMA_VERSION = 1
@@ -3127,10 +3331,18 @@ def main() -> None:
     if manifest_path is None:
         parser.error("formal manifest is required")
 
+    try:
+        manifest_raw = _wait_for_stable_file(manifest_path, "formal manifest")
+    except (OSError, PublicationVisibilityError) as exc:
+        print(
+            f"formal manifest infrastructure visibility failure: {exc}", file=sys.stderr
+        )
+        raise SystemExit(2) from exc
+
     load_errors: list[str] = []
     try:
-        manifest = json.loads(manifest_path.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
+        manifest = json.loads(manifest_raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         manifest = {}
         load_errors.append(f"cannot load formal manifest: {exc}")
     report = evaluate(manifest)

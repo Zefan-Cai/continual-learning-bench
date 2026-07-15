@@ -7,9 +7,6 @@ import argparse
 import hashlib
 import json
 import math
-import os
-import stat
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +26,7 @@ from validate_cohort_causal_results import (
     MECHANISM_LABEL,
     STATISTICAL_ADDENDUM_FILENAME,
     _exact_zero_value_count,
+    _publish_no_overwrite,
     canonical_sha256,
     masked_pair_config_sha256,
     validate_tape_nested_semantics,
@@ -607,34 +605,8 @@ def _report(
 
 
 def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    parent = path.parent.lstat()
-    if not stat.S_ISDIR(parent.st_mode) or path.parent.is_symlink():
-        raise ValueError("smoke gate parent must be a real directory")
     encoded = json.dumps(payload, indent=2, sort_keys=True).encode() + b"\n"
-    descriptor, temporary_name = tempfile.mkstemp(
-        dir=path.parent, prefix=f".{path.name}.tmp.publish."
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(encoded)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.link(temporary, path)
-        directory_fd = os.open(
-            path.parent,
-            os.O_RDONLY
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_DIRECTORY", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
-        )
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    finally:
-        temporary.unlink(missing_ok=True)
+    _publish_no_overwrite(path, encoded)
 
 
 def main() -> None:

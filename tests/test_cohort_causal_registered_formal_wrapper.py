@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from assemble_cohort_causal_manifest import _atomic_write_json
+import validate_cohort_causal_results as result_validator
 from validate_cohort_causal_results import _publish_no_overwrite as publish_decision
 from validate_cohort_causal_smoke import _atomic_write as publish_smoke
 import run_cohort_causal_formal_registered as wrapper
@@ -22,6 +23,26 @@ def _linux_boot_id(monkeypatch: pytest.MonkeyPatch) -> None:
         wrapper, "_boot_id", lambda: "11111111-1111-1111-1111-111111111111"
     )
     monkeypatch.setattr(wrapper, "_revalidate_smoke_gate", lambda **_kwargs: None)
+    monkeypatch.setattr(wrapper, "PUBLISHED_STABILITY_SECONDS", 0.0)
+    monkeypatch.setattr(result_validator, "PUBLISHED_STABILITY_SECONDS", 0.0)
+
+
+def test_retry_002_protocol_identity_is_literal() -> None:
+    assert wrapper.RETRY_ID == "causal-retry-002"
+    assert wrapper.ATTEMPT_ID == "attempt-002"
+    assert wrapper.CLOSED_SOURCE_COMMITS == {
+        "1caf142f6ce611da8da8691d4c336388a4c3c4b3",
+        "059b26b45180b5a295c4c1b36a180cb2a91d5405",
+    }
+    assert (
+        wrapper.RETRY_AMENDMENT_FILENAME
+        == "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V2.md"
+    )
+    assert wrapper.RETRY_AMENDMENT_FILENAME in wrapper.CRITICAL_TRACKED_FILES
+    assert "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V1.md" in (
+        wrapper.CRITICAL_TRACKED_FILES
+    )
+    assert "wait_cohort_causal_phase_outputs.py" in wrapper.CRITICAL_TRACKED_FILES
 
 
 def _write(path: Path, payload: bytes = b"x") -> Path:
@@ -284,6 +305,20 @@ def test_registers_pid_expectation_and_ready_before_any_outcome(
     monkeypatch.setattr(
         wrapper, "_make_expectation", lambda _handoff: (expectation, pid_raw)
     )
+    events: list[tuple[str, str]] = []
+    original_publish = wrapper._publish_no_overwrite
+    original_wait = wrapper._wait_for_stable_regular
+
+    def publish(path: Path, payload: bytes) -> None:
+        events.append(("publish", path.name))
+        original_publish(path, payload)
+
+    def wait(path: Path, label: str, **kwargs: Any) -> bytes:
+        events.append(("wait", label))
+        return original_wait(path, label, **kwargs)
+
+    monkeypatch.setattr(wrapper, "_publish_no_overwrite", publish)
+    monkeypatch.setattr(wrapper, "_wait_for_stable_regular", wait)
 
     observed_handoff, ready = wrapper.register_wrapper(
         Path(handoff["handoff_path"]), validate_runtime=False
@@ -295,6 +330,9 @@ def test_registers_pid_expectation_and_ready_before_any_outcome(
         json.loads(Path(handoff["launch_expectation_path"]).read_bytes()) == expectation
     )
     assert ready["status"] == wrapper.READY_STATUS
+    ready_publish = events.index(("publish", wrapper.READY_FILENAME))
+    assert events.index(("wait", "wrapper PID file")) < ready_publish
+    assert events.index(("wait", "launch expectation")) < ready_publish
     assert not Path(handoff["formal_manifest_path"]).exists()
     assert not Path(handoff["formal_decision_path"]).exists()
     assert not Path(handoff["exit_path"]).exists()
@@ -324,6 +362,64 @@ def test_runner_cannot_start_before_authorization(
     with pytest.raises(wrapper.RegisteredFormalError, match="no auth"):
         wrapper.run_registered_wrapper(Path(handoff["handoff_path"]), runner=runner)
     assert called is False
+
+
+def test_wait_for_authorization_fences_before_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff = _minimal_handoff(tmp_path)
+    authorization = _write(Path(handoff["authorization_path"]), b"authorization")
+    events: list[str] = []
+
+    def wait(path: Path, label: str, **_kwargs: Any) -> bytes:
+        assert path == authorization
+        assert label == "formal start authorization"
+        events.append("stable")
+        return authorization.read_bytes()
+
+    def validate(_handoff: dict[str, Any], path: Path) -> dict[str, Any]:
+        assert _handoff is handoff
+        assert path == authorization
+        events.append("validate")
+        return {"status": "authorized"}
+
+    monkeypatch.setattr(wrapper, "_wait_for_stable_regular", wait)
+    monkeypatch.setattr(wrapper, "_validate_authorization", validate)
+
+    result = wrapper._wait_for_authorization(handoff)
+
+    assert result == {"status": "authorized"}
+    assert events == ["stable", "validate"]
+
+
+def test_nonzero_runner_passes_both_outcomes_to_exit_publisher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handoff = _minimal_handoff(tmp_path)
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(os, "getppid", lambda: 1)
+    monkeypatch.setattr(wrapper, "register_wrapper", lambda _path: (handoff, {}))
+    monkeypatch.setattr(wrapper, "_wait_for_authorization", lambda _handoff: {})
+    monkeypatch.setattr(
+        wrapper, "_validate_authorization", lambda *_args, **_kwargs: {}
+    )
+
+    def publish_exit(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(wrapper, "publish_exit_marker", publish_exit)
+    return_code = wrapper.run_registered_wrapper(
+        Path(handoff["handoff_path"]),
+        runner=lambda *_args, **_kwargs: SimpleNamespace(returncode=2),
+    )
+
+    assert return_code == 2
+    assert captured["return_code"] == 2
+    assert captured["outcome_paths"] == [
+        Path(handoff["formal_manifest_path"]),
+        Path(handoff["formal_decision_path"]),
+    ]
 
 
 def test_no_overwrite_collision_preserves_existing_authority(tmp_path: Path) -> None:

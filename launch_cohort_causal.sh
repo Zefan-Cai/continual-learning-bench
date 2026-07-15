@@ -299,7 +299,21 @@ PY
 
 # Hard barrier: no replay cell starts until every collector tape has completed.
 run_phase "$COLLECTOR_IDS_CSV" "$COLLECTOR_GPUS"
+python "$ROOT/wait_cohort_causal_phase_outputs.py" \
+  --root "$ROOT" \
+  --grid "$GRID" \
+  --section collectors \
+  --timeout-seconds 60 \
+  --stability-seconds 1 \
+  --poll-seconds 0.25
 run_phase "$EVAL_IDS_CSV" "$EVAL_GPUS"
+python "$ROOT/wait_cohort_causal_phase_outputs.py" \
+  --root "$ROOT" \
+  --grid "$GRID" \
+  --section evaluation_cells \
+  --timeout-seconds 60 \
+  --stability-seconds 1 \
+  --poll-seconds 0.25
 
 if [[ "$KIND" == "formal" ]]; then
   FORMAL_MANIFEST="$ROOT/artifacts/cohort_causal/formal_manifest.json"
@@ -310,7 +324,8 @@ if [[ "$KIND" == "formal" ]]; then
     --output "$FORMAL_MANIFEST"
   python "$ROOT/validate_cohort_causal_results.py" \
     --manifest "$FORMAL_MANIFEST" \
-    --output "$DECISION_REPORT"
+    --output "$DECISION_REPORT" \
+    >/dev/null
   echo "formal decision: $DECISION_REPORT"
 else
   SMOKE_REPORT="$ROOT/artifacts/cohort_causal/smoke_gate.json"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prospective, outcome-blind formal wrapper for causal-retry-001.
+"""Prospective, outcome-blind formal wrapper for causal-retry-002.
 
 The wrapper registers its process identity and launch expectation before any
 model call, then waits for a no-overwrite authorization binding the complete
@@ -11,6 +11,7 @@ marker exactly once on a strictly later filesystem timestamp tick.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -28,9 +29,15 @@ from types import ModuleType
 from typing import Any, Callable, Mapping, Sequence
 
 
-RETRY_ID = "causal-retry-001"
+RETRY_ID = "causal-retry-002"
 ATTEMPT_ID = "attempt-002"
-LEGACY_SOURCE_COMMIT = "1caf142f6ce611da8da8691d4c336388a4c3c4b3"
+CLOSED_SOURCE_COMMITS = frozenset(
+    {
+        "1caf142f6ce611da8da8691d4c336388a4c3c4b3",
+        "059b26b45180b5a295c4c1b36a180cb2a91d5405",
+    }
+)
+RETRY_AMENDMENT_FILENAME = "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V2.md"
 CHECKOUT_BASE = Path("/mnt/localssd/ttt-rl-cohort-causal")
 DURABLE_BASE = Path("/sensei-fs/users/zcai/TTT-RL/cohort-qonly-causal")
 REQUIRE_PUSHED_REMOTE_REF = True
@@ -56,6 +63,9 @@ AUTHORIZATION_STATUS = "authorized_before_formal_outcomes"
 STAGES = ("attester", "revalidator", "execution_seal_builder")
 COLLECTOR_GPUS = (0, 2, 3)
 EVAL_GPUS = (0, 2, 3, 4, 5, 6)
+PUBLISHED_VISIBILITY_TIMEOUT_SECONDS = 60.0
+PUBLISHED_STABILITY_SECONDS = 1.0
+PUBLISHED_POLL_SECONDS = 0.25
 EXPECTED_FINAL_INVENTORY = {
     "cell_final_traces": 6,
     "cell_manifests": 6,
@@ -71,6 +81,7 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 CRITICAL_TRACKED_FILES = (
     "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V1.md",
+    RETRY_AMENDMENT_FILENAME,
     "assemble_cohort_causal_manifest.py",
     "build_cohort_causal_provenance.py",
     "build_cohort_structured_state_execution_seal.py",
@@ -80,6 +91,7 @@ CRITICAL_TRACKED_FILES = (
     "run_cohort_causal_formal_registered.py",
     "validate_cohort_causal_results.py",
     "validate_cohort_causal_smoke.py",
+    "wait_cohort_causal_phase_outputs.py",
 )
 
 SMOKE_GATE_KEYS = frozenset(
@@ -176,6 +188,10 @@ HANDOFF_KEYS = frozenset(
 
 class RegisteredFormalError(RuntimeError):
     """Fail-closed registered-wrapper error."""
+
+
+class _VisibilityPending(RuntimeError):
+    """A bounded publication transition has not reached a stable view yet."""
 
 
 def _canonical_bytes(value: Mapping[str, Any]) -> bytes:
@@ -313,6 +329,7 @@ def _publish_no_overwrite(path: Path, payload: bytes) -> None:
     )
     temporary = Path(temporary_name)
     linked = False
+    expected_inode: tuple[int, int] | None = None
     try:
         os.fchmod(descriptor, 0o644)
         view = memoryview(payload)
@@ -322,6 +339,8 @@ def _publish_no_overwrite(path: Path, payload: bytes) -> None:
                 raise OSError("short write")
             view = view[written:]
         os.fsync(descriptor)
+        written = os.fstat(descriptor)
+        expected_inode = (written.st_dev, written.st_ino)
         os.close(descriptor)
         descriptor = -1
         os.link(temporary, target)
@@ -336,9 +355,22 @@ def _publish_no_overwrite(path: Path, payload: bytes) -> None:
             pass
         if linked:
             _fsync_directory(target.parent)
+    if expected_inode is None:
+        raise AssertionError("publication inode was not captured")
+    _wait_for_stable_regular(
+        target,
+        "published file",
+        expected_payload=payload,
+        expected_inode=expected_inode,
+        maximum_wait_seconds=PUBLISHED_VISIBILITY_TIMEOUT_SECONDS,
+        stability_seconds=PUBLISHED_STABILITY_SECONDS,
+        poll_seconds=PUBLISHED_POLL_SECONDS,
+    )
 
 
-def _read_regular(path: Path, label: str) -> bytes:
+def _read_regular_snapshot(
+    path: Path, label: str, *, allow_visibility_transient: bool = False
+) -> tuple[bytes, os.stat_result]:
     target = _absolute(path, label)
     _assert_real_ancestry(target, label=label, include_leaf=False)
     descriptor = os.open(
@@ -347,14 +379,15 @@ def _read_regular(path: Path, label: str) -> bytes:
     )
     try:
         before = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(before.st_mode)
-            or before.st_size <= 0
-            or before.st_nlink != 1
-        ):
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink not in {1, 2}:
             raise RegisteredFormalError(
                 f"{label} must be a nonempty single-link regular file"
             )
+        if before.st_size <= 0 or before.st_nlink == 2:
+            error = f"{label} must be a nonempty single-link regular file"
+            if allow_visibility_transient:
+                raise _VisibilityPending(error)
+            raise RegisteredFormalError(error)
         chunks: list[bytes] = []
         while True:
             chunk = os.read(descriptor, 1024 * 1024)
@@ -370,16 +403,164 @@ def _read_regular(path: Path, label: str) -> bytes:
         or _stat_identity(after) != _stat_identity(pathname)
         or stat.S_ISLNK(pathname.st_mode)
     ):
+        if allow_visibility_transient:
+            raise _VisibilityPending(f"{label} changed during stable read")
         raise RegisteredFormalError(f"{label} changed during stable read")
     payload = b"".join(chunks)
     if len(payload) != after.st_size:
+        if allow_visibility_transient:
+            raise _VisibilityPending(f"{label} size changed during stable read")
         raise RegisteredFormalError(f"{label} size changed during stable read")
+    return payload, after
+
+
+def _read_regular(path: Path, label: str) -> bytes:
+    payload, _ = _read_regular_snapshot(path, label)
     return payload
+
+
+def _assert_retryable_visibility_leaf(
+    path: Path, label: str, *, expected_inode: tuple[int, int] | None = None
+) -> None:
+    """Reject unsafe leaves while allowing bounded publication-cache lag."""
+
+    target = _absolute(path, label)
+    try:
+        info = target.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        if exc.errno in {errno.ENOENT, errno.ESTALE}:
+            return
+        raise
+    if (
+        stat.S_ISLNK(info.st_mode)
+        or not stat.S_ISREG(info.st_mode)
+        or info.st_nlink not in {1, 2}
+        or (expected_inode is not None and (info.st_dev, info.st_ino) != expected_inode)
+    ):
+        raise RegisteredFormalError(
+            f"{label} visibility failure is not a publication transient"
+        )
+
+
+def _wait_for_stable_regular(
+    path: Path,
+    label: str,
+    *,
+    expected_payload: bytes | None = None,
+    expected_inode: tuple[int, int] | None = None,
+    maximum_wait_seconds: float | None = None,
+    stability_seconds: float | None = None,
+    poll_seconds: float | None = None,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    monotonic_fn: Callable[[], float] = time.monotonic,
+) -> bytes:
+    """Wait for two identical safe reads of a no-overwrite publication.
+
+    SenseiFS can briefly expose stale size/link metadata after the publisher
+    unlinks its temporary hardlink.  This barrier never weakens the stable
+    reader: it retries only a missing or regular one/two-link leaf, requires two
+    matching fd/path snapshots, and immediately rejects unexpected bytes or an
+    unsafe filesystem object.
+    """
+
+    maximum_wait_seconds = (
+        PUBLISHED_VISIBILITY_TIMEOUT_SECONDS
+        if maximum_wait_seconds is None
+        else maximum_wait_seconds
+    )
+    stability_seconds = (
+        PUBLISHED_STABILITY_SECONDS if stability_seconds is None else stability_seconds
+    )
+    poll_seconds = PUBLISHED_POLL_SECONDS if poll_seconds is None else poll_seconds
+    if maximum_wait_seconds <= 0 or stability_seconds < 0 or poll_seconds <= 0:
+        raise RegisteredFormalError("publication visibility timing is invalid")
+    target = _absolute(path, label)
+    deadline = monotonic_fn() + maximum_wait_seconds
+    previous: tuple[tuple[int, ...], str] | None = None
+    previous_at: float | None = None
+    observed_inode: tuple[int, int] | None = expected_inode
+    observed_sample: tuple[tuple[int, ...], str] | None = None
+    last_error: BaseException | None = None
+    while True:
+        try:
+            raw, info = _read_regular_snapshot(
+                target, label, allow_visibility_transient=True
+            )
+        except FileNotFoundError as exc:
+            last_error = exc
+            previous = None
+            previous_at = None
+            _assert_retryable_visibility_leaf(
+                target, label, expected_inode=observed_inode
+            )
+        except OSError as exc:
+            if exc.errno not in {errno.ENOENT, errno.ESTALE}:
+                raise
+            last_error = exc
+            previous = None
+            previous_at = None
+            _assert_retryable_visibility_leaf(
+                target, label, expected_inode=observed_inode
+            )
+        except _VisibilityPending as exc:
+            last_error = exc
+            previous = None
+            previous_at = None
+            _assert_retryable_visibility_leaf(
+                target, label, expected_inode=observed_inode
+            )
+        else:
+            inode = (info.st_dev, info.st_ino)
+            if observed_inode is not None and inode != observed_inode:
+                raise RegisteredFormalError(f"{label} published inode differs")
+            if expected_payload is not None and raw != expected_payload:
+                raise RegisteredFormalError(f"{label} published bytes differ")
+            sample = (_stat_identity(info), _sha256(raw))
+            now = monotonic_fn()
+            if now > deadline:
+                break
+            if observed_inode is None:
+                observed_inode = inode
+            if observed_sample is None:
+                observed_sample = sample
+            elif sample != observed_sample:
+                raise RegisteredFormalError(
+                    f"{label} changed between visibility snapshots"
+                )
+            if previous == sample and previous_at is not None:
+                elapsed = now - previous_at
+                if elapsed >= stability_seconds:
+                    return raw
+                delay = stability_seconds - elapsed
+            else:
+                previous = sample
+                previous_at = now
+                delay = stability_seconds
+            last_error = None
+            if delay > max(0.0, deadline - now):
+                break
+            sleep_fn(delay)
+            continue
+        now = monotonic_fn()
+        if now >= deadline:
+            break
+        sleep_fn(min(poll_seconds, max(0.0, deadline - now)))
+    raise RegisteredFormalError(
+        f"{label} did not become stably visible"
+    ) from last_error
 
 
 def _binding(path: Path, label: str) -> dict[str, str]:
     target = _absolute(path, label)
     raw = _read_regular(target, label)
+    return {"path": target.as_posix(), "sha256": _sha256(raw)}
+
+
+def _stable_binding(path: Path, label: str) -> dict[str, str]:
+    target = _absolute(path, label)
+    raw = _wait_for_stable_regular(target, label)
     return {"path": target.as_posix(), "sha256": _sha256(raw)}
 
 
@@ -579,7 +760,7 @@ def make_handoff(
     if max_used_memory_mib < 0:
         raise RegisteredFormalError("GPU memory threshold must be nonnegative")
     commit = _git_output(checkout, "rev-parse", "HEAD")
-    if _COMMIT_RE.fullmatch(commit) is None or commit == LEGACY_SOURCE_COMMIT:
+    if _COMMIT_RE.fullmatch(commit) is None or commit in CLOSED_SOURCE_COMMITS:
         raise RegisteredFormalError("source commit is invalid")
     if checkout != _expected_checkout(commit) or durable != _expected_durable(commit):
         raise RegisteredFormalError("fresh roots do not match the registered layouts")
@@ -619,9 +800,7 @@ def make_handoff(
         _assert_real_directory(directory, f"required directory {directory}")
 
     wrapper_source = checkout / Path(__file__).name
-    retry_amendment = (
-        checkout / "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V1.md"
-    )
+    retry_amendment = checkout / RETRY_AMENDMENT_FILENAME
     launcher = checkout / "launch_cohort_causal.sh"
     formal_grid = checkout / "grid_cohort_causal_formal.json"
     smoke_validator = checkout / "validate_cohort_causal_smoke.py"
@@ -742,7 +921,7 @@ def load_handoff(path: Path) -> tuple[dict[str, Any], bytes]:
     durable = _absolute(value["durable_attempt_root"], "handoff durable root")
     commit = value["source_commit"]
     if (
-        commit == LEGACY_SOURCE_COMMIT
+        commit in CLOSED_SOURCE_COMMITS
         or checkout != _expected_checkout(commit)
         or durable != _expected_durable(commit)
     ):
@@ -809,7 +988,7 @@ def load_handoff(path: Path) -> tuple[dict[str, Any], bytes]:
     )
     _validate_binding(
         value["retry_amendment"],
-        checkout / "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V1.md",
+        checkout / RETRY_AMENDMENT_FILENAME,
         "retry amendment",
     )
     provenance_raw = _validate_binding(
@@ -1033,15 +1212,32 @@ def register_wrapper(
     expectation_path = Path(handoff["launch_expectation_path"])
     ready_path = Path(handoff["ready_path"])
     _publish_no_overwrite(pid_path, pid_raw)
-    _publish_no_overwrite(expectation_path, _canonical_bytes(expectation))
+    stable_pid_raw = _wait_for_stable_regular(
+        pid_path,
+        "wrapper PID file",
+        expected_payload=pid_raw,
+    )
+    expectation_raw = _canonical_bytes(expectation)
+    _publish_no_overwrite(expectation_path, expectation_raw)
+    stable_expectation_raw = _wait_for_stable_regular(
+        expectation_path,
+        "launch expectation",
+        expected_payload=expectation_raw,
+    )
     ready = {
         "handoff": {
             "path": Path(handoff_path).as_posix(),
             "sha256": _sha256(handoff_raw),
         },
-        "launch_expectation": _binding(expectation_path, "launch expectation"),
+        "launch_expectation": {
+            "path": expectation_path.as_posix(),
+            "sha256": _sha256(stable_expectation_raw),
+        },
         "outcome_blind": True,
-        "pid_file": _binding(pid_path, "wrapper PID file"),
+        "pid_file": {
+            "path": pid_path.as_posix(),
+            "sha256": _sha256(stable_pid_raw),
+        },
         "protocol": READY_PROTOCOL,
         "retry_id": RETRY_ID,
         "schema_version": 1,
@@ -1146,7 +1342,7 @@ def _authorization_paths(handoff: Mapping[str, Any]) -> dict[str, Path]:
     paths = _control_paths(handoff)
     plan_path = Path(handoff["v2_execution_plan_path"])
     try:
-        plan = json.loads(_read_regular(plan_path, "V2 execution plan"))
+        plan = json.loads(_wait_for_stable_regular(plan_path, "V2 execution plan"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RegisteredFormalError("V2 execution plan is not JSON") from exc
     if not isinstance(plan, dict):
@@ -1347,7 +1543,7 @@ def _preflight_v2_stages(
     validator: Callable[..., Any] | None = None,
 ) -> None:
     plan_path = Path(handoff["v2_execution_plan_path"])
-    plan_raw = _read_regular(plan_path, "V2 execution plan")
+    plan_raw = _wait_for_stable_regular(plan_path, "V2 execution plan")
     plan = json.loads(plan_raw)
     if not isinstance(plan, dict) or not isinstance(plan.get("invocations"), dict):
         raise RegisteredFormalError("V2 execution plan schema differs")
@@ -1470,13 +1666,13 @@ def authorize_formal_start(
             raise RegisteredFormalError("formal outcome exists before authorization")
     before_paths = _authorization_paths(handoff)
     before_bindings = {
-        name: _binding(path, f"authorization preflight {name}")
+        name: _stable_binding(path, f"authorization preflight {name}")
         for name, path in before_paths.items()
     }
     _preflight_v2_stages(handoff, validator=validator)
     after_paths = _authorization_paths(handoff)
     bindings = {
-        name: _binding(path, f"authorization postflight {name}")
+        name: _stable_binding(path, f"authorization postflight {name}")
         for name, path in after_paths.items()
     }
     if after_paths != before_paths or bindings != before_bindings:
@@ -1500,8 +1696,13 @@ def authorize_formal_start(
         "wrapper_pid": pid,
         "wrapper_start_ticks": ready["wrapper_start_ticks"],
     }
-    _publish_no_overwrite(
-        Path(handoff["authorization_path"]), _canonical_bytes(authorization)
+    authorization_path = Path(handoff["authorization_path"])
+    authorization_raw = _canonical_bytes(authorization)
+    _publish_no_overwrite(authorization_path, authorization_raw)
+    _wait_for_stable_regular(
+        authorization_path,
+        "formal start authorization",
+        expected_payload=authorization_raw,
     )
     return authorization
 
@@ -1568,7 +1769,16 @@ def _wait_for_authorization(handoff: Mapping[str, Any]) -> dict[str, Any]:
     path = Path(handoff["authorization_path"])
     deadline = time.monotonic() + float(handoff["authorization_timeout_seconds"])
     while time.monotonic() < deadline:
-        if path.exists():
+        if os.path.lexists(path):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            _wait_for_stable_regular(
+                path,
+                "formal start authorization",
+                maximum_wait_seconds=remaining,
+                poll_seconds=float(handoff["poll_interval_seconds"]),
+            )
             return _validate_authorization(handoff, path)
         time.sleep(float(handoff["poll_interval_seconds"]))
     raise RegisteredFormalError("timed out waiting for formal start authorization")
@@ -1587,15 +1797,21 @@ def _open_opaque_outcome(path: Path) -> tuple[int, os.stat_result]:
     )
     try:
         info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or info.st_size <= 0 or info.st_nlink != 1:
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink not in {1, 2}:
             raise RegisteredFormalError(
+                "formal outcome must be a nonempty single-link regular file"
+            )
+        if info.st_size <= 0 or info.st_nlink == 2:
+            raise _VisibilityPending(
                 "formal outcome must be a nonempty single-link regular file"
             )
         os.fsync(descriptor)
         info = os.fstat(descriptor)
         pathname = candidate.lstat()
+        if stat.S_ISLNK(pathname.st_mode) or not stat.S_ISREG(pathname.st_mode):
+            raise RegisteredFormalError("formal outcome pathname is unsafe")
         if _stat_identity(info) != _stat_identity(pathname):
-            raise RegisteredFormalError("formal outcome pathname identity differs")
+            raise _VisibilityPending("formal outcome pathname identity differs")
         _fsync_directory(candidate.parent)
         return descriptor, info
     except BaseException:
@@ -1618,13 +1834,108 @@ def _verify_open_outcome(
         raise RegisteredFormalError("formal outcome changed before exit publication")
 
 
+def _wait_for_stable_opaque_outcome(
+    path: Path,
+    *,
+    maximum_wait_seconds: float | None = None,
+    stability_seconds: float | None = None,
+    poll_seconds: float | None = None,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    monotonic_fn: Callable[[], float] = time.monotonic,
+) -> tuple[int, os.stat_result]:
+    """Open an opaque outcome after stable metadata, without reading its bytes."""
+
+    maximum_wait_seconds = (
+        PUBLISHED_VISIBILITY_TIMEOUT_SECONDS
+        if maximum_wait_seconds is None
+        else maximum_wait_seconds
+    )
+    stability_seconds = (
+        PUBLISHED_STABILITY_SECONDS if stability_seconds is None else stability_seconds
+    )
+    poll_seconds = PUBLISHED_POLL_SECONDS if poll_seconds is None else poll_seconds
+    if maximum_wait_seconds <= 0 or stability_seconds < 0 or poll_seconds <= 0:
+        raise RegisteredFormalError("opaque outcome visibility timing is invalid")
+    candidate = _absolute(path, "opaque formal outcome")
+    deadline = monotonic_fn() + maximum_wait_seconds
+    observed_inode: tuple[int, int] | None = None
+    last_error: BaseException | None = None
+    while True:
+        try:
+            descriptor, info = _open_opaque_outcome(candidate)
+        except FileNotFoundError as exc:
+            last_error = exc
+            _assert_retryable_visibility_leaf(candidate, "opaque formal outcome")
+        except OSError as exc:
+            if exc.errno not in {errno.ENOENT, errno.ESTALE}:
+                raise
+            last_error = exc
+            _assert_retryable_visibility_leaf(candidate, "opaque formal outcome")
+        except _VisibilityPending as exc:
+            last_error = exc
+            _assert_retryable_visibility_leaf(candidate, "opaque formal outcome")
+        else:
+            inode = (info.st_dev, info.st_ino)
+            if observed_inode is not None and inode != observed_inode:
+                os.close(descriptor)
+                raise RegisteredFormalError("formal outcome published inode differs")
+            if observed_inode is None:
+                observed_inode = inode
+            opened_at = monotonic_fn()
+            if opened_at > deadline:
+                os.close(descriptor)
+                break
+            if stability_seconds > max(0.0, deadline - opened_at):
+                os.close(descriptor)
+                break
+            sleep_fn(stability_seconds)
+            verified_at = monotonic_fn()
+            if verified_at > deadline or verified_at - opened_at < stability_seconds:
+                os.close(descriptor)
+                continue
+            try:
+                _verify_open_outcome(candidate, descriptor, info)
+            except FileNotFoundError as exc:
+                os.close(descriptor)
+                last_error = exc
+                _assert_retryable_visibility_leaf(
+                    candidate,
+                    "opaque formal outcome",
+                    expected_inode=observed_inode,
+                )
+                continue
+            except OSError as exc:
+                if exc.errno not in {errno.ENOENT, errno.ESTALE}:
+                    os.close(descriptor)
+                    raise
+                os.close(descriptor)
+                last_error = exc
+                _assert_retryable_visibility_leaf(
+                    candidate,
+                    "opaque formal outcome",
+                    expected_inode=observed_inode,
+                )
+                continue
+            except BaseException:
+                os.close(descriptor)
+                raise
+            return descriptor, info
+        now = monotonic_fn()
+        if now >= deadline:
+            break
+        sleep_fn(min(poll_seconds, max(0.0, deadline - now)))
+    raise RegisteredFormalError(
+        "opaque formal outcome did not become stably visible"
+    ) from last_error
+
+
 def publish_exit_marker(
     *,
     exit_path: Path,
     return_code: int,
     outcome_paths: Sequence[Path],
     sleep_fn: Callable[[float], None] = time.sleep,
-    maximum_wait_seconds: float = 30.0,
+    maximum_wait_seconds: float = PUBLISHED_VISIBILITY_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """Publish a no-overwrite marker strictly after opaque outcome files."""
 
@@ -1632,13 +1943,24 @@ def publish_exit_marker(
     if os.path.lexists(target):
         raise FileExistsError("refusing pre-existing formal exit marker")
     threshold = -1
-    if return_code == 0 and len(outcome_paths) != 2:
-        raise RegisteredFormalError("successful formal run requires two outcome files")
+    exit_inode: tuple[int, int] | None = None
+    if len(outcome_paths) != 2:
+        raise RegisteredFormalError("formal exit requires two opaque outcome files")
     opened: list[tuple[Path, int, os.stat_result]] = []
+    outcome_deadline = time.monotonic() + maximum_wait_seconds
     try:
         for path in outcome_paths:
             candidate = _absolute(path, "opaque formal outcome")
-            descriptor, info = _open_opaque_outcome(candidate)
+            remaining = outcome_deadline - time.monotonic()
+            if remaining <= 0:
+                raise RegisteredFormalError(
+                    "opaque formal outcomes exceeded their shared visibility deadline"
+                )
+            descriptor, info = _wait_for_stable_opaque_outcome(
+                candidate,
+                maximum_wait_seconds=remaining,
+                sleep_fn=sleep_fn,
+            )
             opened.append((candidate, descriptor, info))
             threshold = max(threshold, info.st_mtime_ns)
 
@@ -1651,6 +1973,8 @@ def publish_exit_marker(
                 f".{target.name}.tmp.candidate.{os.getpid()}.{attempt}"
             )
             _publish_no_overwrite(probe, payload)
+            probe_info = probe.lstat()
+            probe_inode = (probe_info.st_dev, probe_info.st_ino)
             probe_mtime = _mtime_ns(probe)
             if probe_mtime > threshold:
                 for candidate, descriptor, info in opened:
@@ -1665,6 +1989,7 @@ def publish_exit_marker(
                 _fsync_directory(target.parent)
                 probe.unlink()
                 _fsync_directory(target.parent)
+                exit_inode = probe_inode
                 for candidate, descriptor, info in opened:
                     _verify_open_outcome(candidate, descriptor, info)
                 break
@@ -1674,7 +1999,16 @@ def publish_exit_marker(
                 raise RegisteredFormalError("filesystem timestamp did not advance")
             sleep_fn(0.25)
 
-        final_raw = _read_regular(target, "formal exit marker")
+        if exit_inode is None:
+            raise AssertionError("formal exit inode was not captured")
+        final_raw = _wait_for_stable_regular(
+            target,
+            "formal exit marker",
+            expected_payload=payload,
+            expected_inode=exit_inode,
+            maximum_wait_seconds=maximum_wait_seconds,
+            sleep_fn=sleep_fn,
+        )
         final_mtime = _mtime_ns(target)
         if final_raw != payload or final_mtime <= threshold:
             raise RegisteredFormalError("formal exit marker postcondition failed")
@@ -1720,18 +2054,10 @@ def run_registered_wrapper(
     _validate_authorization(
         handoff, Path(handoff["authorization_path"]), require_outcomes_absent=False
     )
-    outcomes = (
-        [Path(handoff["formal_manifest_path"]), Path(handoff["formal_decision_path"])]
-        if return_code == 0
-        else [
-            Path(value)
-            for value in (
-                handoff["formal_manifest_path"],
-                handoff["formal_decision_path"],
-            )
-            if Path(value).is_file()
-        ]
-    )
+    outcomes = [
+        Path(handoff["formal_manifest_path"]),
+        Path(handoff["formal_decision_path"]),
+    ]
     publish_exit_marker(
         exit_path=Path(handoff["exit_path"]),
         return_code=return_code,

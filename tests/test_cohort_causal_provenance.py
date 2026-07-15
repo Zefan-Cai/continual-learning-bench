@@ -10,6 +10,12 @@ import pytest
 
 import build_cohort_causal_provenance as provenance
 from run_cohort_causal import REQUIRED_PROVENANCE_FIELDS
+import validate_cohort_causal_results as validator
+
+
+@pytest.fixture(autouse=True)
+def _fast_publication_fence(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(validator, "PUBLISHED_STABILITY_SECONDS", 0.0)
 
 
 def _run(command: list[str], *, cwd: Path) -> str:
@@ -32,6 +38,7 @@ def _make_checkout(tmp_path: Path, *, omit: str | None = None) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
         if relative in {
             "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V1.md",
+            "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V2.md",
             provenance.STATISTICAL_ADDENDUM_FILENAME,
         }:
             path.write_bytes((provenance.ROOT / relative).read_bytes())
@@ -124,10 +131,16 @@ def test_bundle_is_deterministic_and_matches_runner_contract(tmp_path: Path) -> 
     )
 
 
-def test_evaluation_inventory_binds_infrastructure_retry_amendment(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    "amendment",
+    [
+        "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V1.md",
+        "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V2.md",
+    ],
+)
+def test_evaluation_inventory_binds_infrastructure_retry_amendments(
+    tmp_path: Path, amendment: str
 ) -> None:
-    amendment = "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V1.md"
     root = _make_checkout(tmp_path)
     inventory = provenance.hash_evaluation_code(root)
     record = next(item for item in inventory["files"] if item["path"] == amendment)
@@ -257,6 +270,40 @@ def test_atomic_outputs_never_overwrite(tmp_path: Path) -> None:
     assert output.read_bytes() == original_output
     assert sidecar.read_bytes() == original_sidecar
     assert json.loads(output.read_text()) == consumer
+    assert json.loads(sidecar.read_text()) == details
+
+
+def test_consumer_collision_preserves_published_provenance_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _make_checkout(tmp_path)
+    model = _make_model(tmp_path)
+    consumer, details = provenance.create_provenance_bundle(
+        root=root,
+        model_path=model,
+        environment_payload=_environment(),
+    )
+    output = tmp_path / "provenance.json"
+    sidecar = tmp_path / "provenance.details.json"
+    original_publish = provenance._publish_atomic_no_overwrite
+
+    def collide(path: Path, payload: bytes) -> None:
+        if path == output:
+            path.write_bytes(b"concurrent-authority")
+            raise FileExistsError("concurrent authority")
+        original_publish(path, payload)
+
+    monkeypatch.setattr(provenance, "_publish_atomic_no_overwrite", collide)
+
+    with pytest.raises(FileExistsError, match="concurrent authority"):
+        provenance.write_provenance_bundle(
+            output=output,
+            details_output=sidecar,
+            provenance=consumer,
+            details=details,
+        )
+
+    assert output.read_bytes() == b"concurrent-authority"
     assert json.loads(sidecar.read_text()) == details
 
 

@@ -1,15 +1,16 @@
 {
-  "active_probe": "cohort_reward_aware_online_icl_v1_smoke_attempt_002",
-  "status": "prospective_revision_frozen_for_new_provenance_and_seal",
-  "mechanism_family": "frozen_tape_parameter_update_vs_reward_aware_online_icl",
-  "job_name": "ttt-rl-causal-a40-p2-0",
-  "job_id": "eeed73a4-e7c3-4d11-accb-24b39c1c2827",
-  "pluto_priority": "P2_after_live_P1_capacity_zero",
-  "source_commit": "self_bound_by_runtime_provenance",
-  "attempt": "attempt-002",
-  "next_gate": "independent_two_instance_online_icl_infrastructure_smoke",
-  "baseline": "canonical_reward_aware_online_icl_no_parameter_updates",
-  "primary_metric": "integrity_only_no_efficacy_interpretation",
+  "active_probe": "cohort_qonly_causal_retry_002",
+  "status": "infrastructure_amendment_v2_validated_pending_commit_push_and_fresh_smoke",
+  "mechanism_family": "frozen_tape_parameter_update_active_vs_lr0",
+  "job_name": "ttt-rl-causal-a40-0",
+  "job_id": null,
+  "pluto_priority": "P1_first_A100_40G_then_P2_only_if_needed",
+  "source_commit": "pending_new_pushed_retry_002_commit",
+  "scientific_retry": "causal-retry-002",
+  "verifier_leaf": "attempt-002",
+  "next_gate": "fresh_two_instance_causal_smoke_in_new_commit_scoped_roots",
+  "baseline": "lr0_replays_identical_frozen_tape_order_and_optimizer_calls",
+  "primary_metric": "three_seed_paired_active_minus_lr0_heldout_reward_delta",
   "success_threshold": {
     "all_three_seed_deltas_strictly_positive": true,
     "mean_delta_gte": 0.02,
@@ -18,24 +19,25 @@
   },
   "competitive_control": {
     "name": "cohort_reward_aware_online_icl_v1",
-    "status": "attempt_001_infrastructure_invalid_attempt_002_pending_new_seal",
-    "launch_condition": "new_clean_pushed_source_provenance_and_protocol_seal"
+    "status": "deferred_until_causal_internal_gate_pass",
+    "launch_condition": "causal_internal_gate_pass_then_new_clean_pushed_source_provenance_and_protocol_seal"
   },
-  "causal_prerequisite": {
-    "source_commit": "1caf142f6ce611da8da8691d4c336388a4c3c4b3",
-    "attempt": "attempt-002",
-    "smoke_gate": "pass",
-    "formal_started": false
-  },
-  "invalid_attempt": {
-    "attempt": "attempt-001",
-    "source_commit": "bd9bb0a2030b5b29699320f12d98517b790ab27c",
-    "failure_class": "snapshot_reconstruction_pydantic_serialization_mismatch",
-    "smoke_gate_created": false,
-    "automated_validator_processed_bound_efficacy": true,
-    "efficacy_surfaced_to_operator": false,
-    "efficacy_human_interpreted": false
-  },
+  "closed_causal_attempts": [
+    {
+      "source_commit": "1caf142f6ce611da8da8691d4c336388a4c3c4b3",
+      "scientific_retry": "legacy_original_tuple",
+      "failure_class": "terminal_verifier_infrastructure_invalid",
+      "efficacy_opened": false
+    },
+    {
+      "source_commit": "059b26b45180b5a295c4c1b36a180cb2a91d5405",
+      "scientific_retry": "causal-retry-001",
+      "failure_class": "pre_ready_senseifs_visibility_failure",
+      "smoke_gate": "pass",
+      "formal_started": false,
+      "efficacy_opened": false
+    }
+  ],
   "retired_routes": [
     "historical_group_pg_after_failed_candidate_diversity_gate",
     "candidate_distillation_after_failed_formal_efficacy"
