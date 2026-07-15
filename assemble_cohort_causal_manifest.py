@@ -7,6 +7,8 @@ import argparse
 import hashlib
 import json
 import os
+import stat
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -36,19 +38,42 @@ from validate_cohort_causal_results import (
 
 def _atomic_write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=False,
-        allow_nan=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8") + b"\n"
-    temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
-    with temporary.open("xb") as handle:
-        handle.write(encoded)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(temporary, path)
+    parent = path.parent.lstat()
+    if not stat.S_ISDIR(parent.st_mode) or path.parent.is_symlink():
+        raise ValueError("formal manifest parent must be a real directory")
+    encoded = (
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        + b"\n"
+    )
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.tmp.publish."
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.link(temporary, path)
+        directory_fd = os.open(
+            path.parent,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -112,12 +137,9 @@ def assemble_manifest(
 ) -> dict[str, Any]:
     if grid.get("kind") != "formal":
         raise ValueError("the evidence manifest can only be assembled from formal grid")
-    collectors = {
-        row["run_seed"]: row for row in grid.get("collectors", [])
-    }
+    collectors = {row["run_seed"]: row for row in grid.get("collectors", [])}
     cells = {
-        (row["run_seed"], row["arm"]): row
-        for row in grid.get("evaluation_cells", [])
+        (row["run_seed"], row["arm"]): row for row in grid.get("evaluation_cells", [])
     }
     if len(collectors) != 3 or len(cells) != 6:
         raise ValueError("formal grid must contain 3 collectors and 6 replay cells")
@@ -125,9 +147,7 @@ def assemble_manifest(
     pairs: list[dict[str, Any]] = []
     for run_seed in sorted(collectors):
         collector_cfg = collectors[run_seed]
-        collector_manifest = _load_json(
-            _collector_manifest_path(root, collector_cfg)
-        )
+        collector_manifest = _load_json(_collector_manifest_path(root, collector_cfg))
         if (
             collector_manifest.get("status") != "completed"
             or collector_manifest.get("run_seed") != run_seed
@@ -185,7 +205,9 @@ def assemble_manifest(
     preregistration_bytes = registered_preregistration.read_bytes()
     preregistration_sha256 = hashlib.sha256(preregistration_bytes).hexdigest()
     if preregistration_sha256 != EXPECTED_PREREGISTRATION_SHA256:
-        raise ValueError("checked-in preregistration bytes differ from validator binding")
+        raise ValueError(
+            "checked-in preregistration bytes differ from validator binding"
+        )
     registered_statistical_addendum = root / STATISTICAL_ADDENDUM_FILENAME
     requested_statistical_addendum = (
         registered_statistical_addendum
@@ -200,16 +222,12 @@ def assemble_manifest(
             "statistical addendum path is not the checked-in repository file"
         )
     statistical_addendum_bytes = registered_statistical_addendum.read_bytes()
-    statistical_addendum_sha256 = hashlib.sha256(
-        statistical_addendum_bytes
-    ).hexdigest()
+    statistical_addendum_sha256 = hashlib.sha256(statistical_addendum_bytes).hexdigest()
     if statistical_addendum_sha256 != EXPECTED_STATISTICAL_ADDENDUM_SHA256:
         raise ValueError(
             "checked-in statistical addendum bytes differ from validator binding"
         )
-    if provenance.get("statistical_addendum_sha256") != (
-        statistical_addendum_sha256
-    ):
+    if provenance.get("statistical_addendum_sha256") != (statistical_addendum_sha256):
         raise ValueError("provenance statistical addendum SHA-256 mismatch")
     return {
         "schema_version": SCHEMA_VERSION,

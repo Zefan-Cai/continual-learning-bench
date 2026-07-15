@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Bounded single-node launcher for the preregistered Cohort causal gate.
 set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONNOUSERSITE=1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KIND="${1:-}"

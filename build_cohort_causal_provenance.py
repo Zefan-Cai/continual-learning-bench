@@ -20,9 +20,14 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from generate_cohort_causal_grid import ADAPTER_INIT_SEED
-from run_cohort_causal import REQUIRED_PROVENANCE_FIELDS
-from validate_cohort_causal_results import (
+# The fresh-retry clean-tree gate rejects ignored bytecode as an import-shadow
+# channel.  Set this before importing any checkout-local module so provenance
+# construction itself cannot create ``__pycache__``.
+sys.dont_write_bytecode = True
+
+from generate_cohort_causal_grid import ADAPTER_INIT_SEED  # noqa: E402
+from run_cohort_causal import REQUIRED_PROVENANCE_FIELDS  # noqa: E402
+from validate_cohort_causal_results import (  # noqa: E402
     EXPECTED_STATISTICAL_ADDENDUM_SHA256,
     PREREGISTERED_PARENT_COMMIT,
     STATISTICAL_ADDENDUM_FILENAME,
@@ -36,6 +41,7 @@ AUDIT_KIND = "cohort_causal_provenance_audit"
 # This is intentionally an allowlist, not a source-tree glob.  Adding or moving
 # evaluation-affecting code must be an explicit provenance-contract change.
 EVALUATION_CODE_ALLOWLIST = (
+    "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V1.md",
     "COHORT_QONLY_CAUSAL_PREREG.md",
     "COHORT_QONLY_CAUSAL_STATISTICAL_ADDENDUM_V1.md",
     "assemble_cohort_causal_manifest.py",
@@ -45,6 +51,7 @@ EVALUATION_CODE_ALLOWLIST = (
     "grid_cohort_causal_smoke.json",
     "launch_cohort_causal.sh",
     "run_cohort_causal.py",
+    "run_cohort_causal_formal_registered.py",
     "src/artifacts.py",
     "src/errors.py",
     "src/interface.py",
@@ -487,9 +494,7 @@ def verify_current_provenance(
     if not isinstance(model_path_value, str) or not model_path_value:
         raise RuntimeError("runtime provenance model_path is invalid")
     model_path = Path(model_path_value)
-    if expected_model_path is not None and model_path_value != str(
-        expected_model_path
-    ):
+    if expected_model_path is not None and model_path_value != str(expected_model_path):
         raise RuntimeError("runtime model path differs from registered cell config")
 
     current, _details = create_provenance_bundle(

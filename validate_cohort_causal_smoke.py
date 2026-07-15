@@ -8,6 +8,8 @@ import hashlib
 import json
 import math
 import os
+import stat
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -105,9 +107,10 @@ def _terminal_action_summary(
         if not isinstance(interaction, dict):
             continue
         observation = interaction.get("observation")
-        if not isinstance(observation, dict) or observation.get(
-            "instance_complete"
-        ) is not True:
+        if (
+            not isinstance(observation, dict)
+            or observation.get("instance_complete") is not True
+        ):
             continue
         position = len(actions)
         query = interaction.get("query")
@@ -373,7 +376,9 @@ def validate_smoke(
                     or any(
                         not isinstance(digest, str)
                         or len(digest) != 64
-                        or any(character not in "0123456789abcdef" for character in digest)
+                        or any(
+                            character not in "0123456789abcdef" for character in digest
+                        )
                         for digest in input_sha256
                     )
                 ):
@@ -434,13 +439,19 @@ def validate_smoke(
                 )
                 if before != after:
                     changed_operations += 1
-                if arm == "lr0" and (before != replay_initial or after != replay_initial):
+                if arm == "lr0" and (
+                    before != replay_initial or after != replay_initial
+                ):
                     errors.append(
                         f"LR0 replay operation changed parameters at "
                         f"{item_index}/{operation_index}"
                     )
                 operation_previous = after
-            if operations and replay_item.get("trainable_param_sha256_after") != operation_previous:
+            if (
+                operations
+                and replay_item.get("trainable_param_sha256_after")
+                != operation_previous
+            ):
                 errors.append(f"{label} replay item {item_index} final hash mismatch")
             previous_hash = replay_item.get("trainable_param_sha256_after")
             arm_signatures.append(item_signature)
@@ -493,17 +504,14 @@ def validate_smoke(
             if not isinstance(integrity, dict):
                 errors.append(f"{label} outcome {position} has no integrity evidence")
                 continue
-            if (
-                integrity.get("schema_valid") is not True
-                or any(
-                    integrity.get(field) is not False
-                    for field in (
-                        "synthetic",
-                        "timed_out",
-                        "fallback",
-                        "missing",
-                        "hard_schema_failure",
-                    )
+            if integrity.get("schema_valid") is not True or any(
+                integrity.get(field) is not False
+                for field in (
+                    "synthetic",
+                    "timed_out",
+                    "fallback",
+                    "missing",
+                    "hard_schema_failure",
                 )
             ):
                 errors.append(f"{label} outcome {position} failed integrity gate")
@@ -592,9 +600,7 @@ def _report(
         "tape_sha256": tape_sha256,
         "trainable_param_sha256_initial": initial_sha256,
         "provenance_sha256": canonical_sha256(provenance),
-        "statistical_addendum_sha256": provenance.get(
-            "statistical_addendum_sha256"
-        ),
+        "statistical_addendum_sha256": provenance.get("statistical_addendum_sha256"),
         "terminal_actions": terminal_actions or {},
         "errors": sorted(set(errors)),
     }
@@ -602,13 +608,33 @@ def _report(
 
 def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    parent = path.parent.lstat()
+    if not stat.S_ISDIR(parent.st_mode) or path.parent.is_symlink():
+        raise ValueError("smoke gate parent must be a real directory")
     encoded = json.dumps(payload, indent=2, sort_keys=True).encode() + b"\n"
-    with temporary.open("xb") as handle:
-        handle.write(encoded)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(temporary, path)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.tmp.publish."
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.link(temporary, path)
+        directory_fd = os.open(
+            path.parent,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def main() -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from copy import deepcopy
@@ -29,11 +30,11 @@ def _make_checkout(tmp_path: Path, *, omit: str | None = None) -> Path:
             continue
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
-        if relative == provenance.STATISTICAL_ADDENDUM_FILENAME:
-            path.write_bytes(
-                (provenance.ROOT / provenance.STATISTICAL_ADDENDUM_FILENAME)
-                .read_bytes()
-            )
+        if relative in {
+            "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V1.md",
+            provenance.STATISTICAL_ADDENDUM_FILENAME,
+        }:
+            path.write_bytes((provenance.ROOT / relative).read_bytes())
         else:
             path.write_text(f"evaluation-file-{index}\n")
     _run(["git", "init", "-q"], cwd=root)
@@ -54,9 +55,7 @@ def _make_model(tmp_path: Path) -> Path:
         json.dumps(
             {
                 "metadata": {},
-                "weight_map": {
-                    "layer.weight": "model-00001-of-00001.safetensors"
-                },
+                "weight_map": {"layer.weight": "model-00001-of-00001.safetensors"},
             }
         )
     )
@@ -117,14 +116,40 @@ def test_bundle_is_deterministic_and_matches_runner_contract(tmp_path: Path) -> 
     assert details["provenance"] == consumer
     assert details["model"]["inventory_sha256"] == consumer["model_sha256"]
     assert details["tokenizer"]["inventory_sha256"] == consumer["tokenizer_sha256"]
-    assert details["environment"]["sha256"] == consumer[
-        "environment_lock_sha256"
-    ]
+    assert details["environment"]["sha256"] == consumer["environment_lock_sha256"]
     assert (
         consumer["statistical_addendum_sha256"]
         == provenance.EXPECTED_STATISTICAL_ADDENDUM_SHA256
         == details["statistical_addendum"]["sha256"]
     )
+
+
+def test_evaluation_inventory_binds_infrastructure_retry_amendment(
+    tmp_path: Path,
+) -> None:
+    amendment = "COHORT_QONLY_CAUSAL_INFRASTRUCTURE_RETRY_AMENDMENT_V1.md"
+    root = _make_checkout(tmp_path)
+    inventory = provenance.hash_evaluation_code(root)
+    record = next(item for item in inventory["files"] if item["path"] == amendment)
+
+    expected = (provenance.ROOT / amendment).read_bytes()
+    assert amendment in inventory["allowlist"]
+    assert record["sha256"] == hashlib.sha256(expected).hexdigest()
+    assert record["size_bytes"] == len(expected)
+
+    before = inventory["inventory_sha256"]
+    (root / amendment).write_bytes(expected + b"\n")
+    _run(["git", "add", amendment], cwd=root)
+    _run(["git", "commit", "-qm", "change retry amendment"], cwd=root)
+    assert provenance.hash_evaluation_code(root)["inventory_sha256"] != before
+
+
+def test_provenance_disables_bytecode_before_checkout_local_imports() -> None:
+    source = (provenance.ROOT / "build_cohort_causal_provenance.py").read_text()
+    guard = source.index("sys.dont_write_bytecode = True")
+    assert guard < source.index("from generate_cohort_causal_grid import")
+    assert guard < source.index("from run_cohort_causal import")
+    assert guard < source.index("from validate_cohort_causal_results import")
 
 
 def test_statistical_addendum_tamper_fails_closed(tmp_path: Path) -> None:
@@ -191,9 +216,7 @@ def test_missing_required_evaluation_file_fails_closed(tmp_path: Path) -> None:
 
 
 def test_untracked_statistical_addendum_fails_closed(tmp_path: Path) -> None:
-    root = _make_checkout(
-        tmp_path, omit=provenance.STATISTICAL_ADDENDUM_FILENAME
-    )
+    root = _make_checkout(tmp_path, omit=provenance.STATISTICAL_ADDENDUM_FILENAME)
     addendum = root / provenance.STATISTICAL_ADDENDUM_FILENAME
     addendum.write_bytes(
         (provenance.ROOT / provenance.STATISTICAL_ADDENDUM_FILENAME).read_bytes()

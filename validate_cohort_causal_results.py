@@ -19,11 +19,44 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import random
+import stat
 import statistics
+import tempfile
 from collections import Counter
 from pathlib import Path
 from typing import Any
+
+
+def _publish_no_overwrite(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    parent = path.parent.lstat()
+    if not stat.S_ISDIR(parent.st_mode) or path.parent.is_symlink():
+        raise ValueError("formal decision parent must be a real directory")
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.tmp.publish."
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.link(temporary, path)
+        directory_fd = os.open(
+            path.parent,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 SCHEMA_VERSION = 1
@@ -670,8 +703,7 @@ def _exact_two_sided_sign_test(seed_deltas: list[float]) -> dict[str, Any]:
     else:
         extreme = max(positives, negatives)
         tail = sum(
-            math.comb(nonzero, count)
-            for count in range(extreme, nonzero + 1)
+            math.comb(nonzero, count) for count in range(extreme, nonzero + 1)
         ) / (2**nonzero)
         p_value = min(1.0, 2.0 * tail)
     return {
@@ -950,9 +982,8 @@ def _load_and_verify_checked_in_corpus(
     except OSError as exc:
         errors.append(f"cannot read checked-in {role} schedule: {exc}")
     else:
-        if (
-            hashlib.sha256(schedule_bytes).hexdigest()
-            != dataset_manifest.get("schedule_sha256")
+        if hashlib.sha256(schedule_bytes).hexdigest() != dataset_manifest.get(
+            "schedule_sha256"
         ):
             errors.append(f"checked-in {role} schedule raw SHA-256 mismatch")
 
@@ -966,7 +997,9 @@ def _load_and_verify_checked_in_corpus(
         errors.append(f"cannot project checked-in {role} manifest.json: {exc}")
         return None
     if not strict_json_equal(projection, formal_corpus):
-        errors.append(f"formal {role} corpus differs from checked-in manifest projection")
+        errors.append(
+            f"formal {role} corpus differs from checked-in manifest projection"
+        )
     if len(errors) != error_count:
         return None
     return {
@@ -994,10 +1027,7 @@ def _validate_provenance(value: Any, errors: list[str]) -> dict[str, Any] | None
     ):
         if not _is_sha256(value.get(field)):
             errors.append(f"provenance: {field} must be a lowercase SHA-256")
-    if (
-        value.get("statistical_addendum_sha256")
-        != EXPECTED_STATISTICAL_ADDENDUM_SHA256
-    ):
+    if value.get("statistical_addendum_sha256") != EXPECTED_STATISTICAL_ADDENDUM_SHA256:
         errors.append("provenance: statistical addendum SHA-256 mismatch")
     if value.get("model_path") != EXPECTED_SYSTEM_CONFIG["model_path"]:
         errors.append("provenance: model_path mismatch")
@@ -1100,7 +1130,9 @@ _UPDATE_CONTRACT_KEYS = (
 )
 
 
-def _exact_keys(value: Any, expected: set[str], *, label: str, errors: list[str]) -> bool:
+def _exact_keys(
+    value: Any, expected: set[str], *, label: str, errors: list[str]
+) -> bool:
     if not isinstance(value, dict):
         errors.append(f"{label}: must be an object")
         return False
@@ -1176,9 +1208,7 @@ def _validate_formal_exact_schema(manifest: dict[str, Any]) -> list[str]:
                     errors.append(f"{cell_label}/replay/items: must be a list")
                 else:
                     for item_index, item in enumerate(replay_items):
-                        item_label = (
-                            f"{cell_label}/replay/items[{item_index}]"
-                        )
+                        item_label = f"{cell_label}/replay/items[{item_index}]"
                         if not exact(item, _REPLAY_ITEM_KEYS, item_label):
                             if not isinstance(item, dict):
                                 continue
@@ -1202,9 +1232,7 @@ def _validate_formal_exact_schema(manifest: dict[str, Any]) -> list[str]:
                 errors.append(f"{cell_label}/heldout_outcomes: must be a list")
             else:
                 for outcome_index, outcome in enumerate(outcomes):
-                    outcome_label = (
-                        f"{cell_label}/heldout_outcomes[{outcome_index}]"
-                    )
+                    outcome_label = f"{cell_label}/heldout_outcomes[{outcome_index}]"
                     if exact(outcome, _HELDOUT_OUTCOME_KEYS, outcome_label):
                         exact(
                             outcome.get("integrity"),
@@ -1246,9 +1274,7 @@ def _validate_tape_item_semantics(
         errors.append(f"{label}: schema_version mismatch")
     integrity = item.get("integrity")
     _exact_keys(integrity, _INTEGRITY_KEYS, label=f"{label}/integrity", errors=errors)
-    _validate_integrity_status(
-        integrity, label=f"{label}/integrity", errors=errors
-    )
+    _validate_integrity_status(integrity, label=f"{label}/integrity", errors=errors)
 
     sampling = item.get("sampling_provenance")
     if _exact_keys(
@@ -1277,9 +1303,10 @@ def _validate_tape_item_semantics(
             errors.append(f"{label}: requested_best_of_n must be 8")
         if sampling.get("initial_sample_attempts") != 7:
             errors.append(f"{label}: initial_sample_attempts must be 7")
-        if not _is_int(sampling.get("interaction_step")) or sampling[
-            "interaction_step"
-        ] < 1:
+        if (
+            not _is_int(sampling.get("interaction_step"))
+            or sampling["interaction_step"] < 1
+        ):
             errors.append(f"{label}: interaction_step must be positive")
         if not _is_sha256(sampling.get("sampling_prompt_sha256")):
             errors.append(f"{label}: sampling_prompt_sha256 is invalid")
@@ -1328,14 +1355,19 @@ def _validate_tape_item_semantics(
     candidate_objects: list[dict[str, Any]] = []
     for candidate_index, record in enumerate(candidates):
         candidate_label = f"{label}/env_bon/candidates[{candidate_index}]"
-        if not _exact_keys(record, _CANDIDATE_KEYS, label=candidate_label, errors=errors):
+        if not _exact_keys(
+            record, _CANDIDATE_KEYS, label=candidate_label, errors=errors
+        ):
             continue
         candidate = record.get("candidate")
         reward = record.get("reward")
         if not isinstance(candidate, str) or not candidate:
             errors.append(f"{candidate_label}: candidate must be non-empty")
             continue
-        if record.get("candidate_sha256") != hashlib.sha256(candidate.encode()).hexdigest():
+        if (
+            record.get("candidate_sha256")
+            != hashlib.sha256(candidate.encode()).hexdigest()
+        ):
             errors.append(f"{candidate_label}: candidate_sha256 mismatch")
         if not _is_number(reward):
             errors.append(f"{candidate_label}: reward must be finite numeric")
@@ -1373,23 +1405,34 @@ def _validate_tape_item_semantics(
         range(len(candidates)), key=lambda index: candidate_rewards[index], reverse=True
     )
     expected_specs = [
-        ("positive", ranked_indices[0], float(EXPECTED_SYSTEM_CONFIG["reward_positive_weight"])),
-        ("negative", ranked_indices[-1], -float(EXPECTED_SYSTEM_CONFIG["reward_negative_weight"])),
+        (
+            "positive",
+            ranked_indices[0],
+            float(EXPECTED_SYSTEM_CONFIG["reward_positive_weight"]),
+        ),
+        (
+            "negative",
+            ranked_indices[-1],
+            -float(EXPECTED_SYSTEM_CONFIG["reward_negative_weight"]),
+        ),
     ]
     batches = env_bon.get("selected_batches")
     if not isinstance(batches, list) or len(batches) != len(expected_specs):
         errors.append(f"{label}: selected_batches must contain exact best/worst pair")
         return
-    for batch_index, (batch, expected) in enumerate(zip(batches, expected_specs, strict=True)):
+    for batch_index, (batch, expected) in enumerate(
+        zip(batches, expected_specs, strict=True)
+    ):
         batch_label = f"{label}/env_bon/selected_batches[{batch_index}]"
         if not _exact_keys(batch, _BATCH_KEYS, label=batch_label, errors=errors):
             continue
         role, candidate_index, signed_weight = expected
         if batch.get("role") != role or batch.get("candidate_index") != candidate_index:
             errors.append(f"{batch_label}: selected candidate role/index mismatch")
-        if not _is_number(batch.get("signed_weight")) or float(
-            batch["signed_weight"]
-        ) != signed_weight:
+        if (
+            not _is_number(batch.get("signed_weight"))
+            or float(batch["signed_weight"]) != signed_weight
+        ):
             errors.append(f"{batch_label}: signed_weight mismatch")
         if not _valid_token_batch(batch.get("ids"), batch.get("prompt_tokens")):
             errors.append(f"{batch_label}: token batch is malformed")
@@ -1450,16 +1493,25 @@ def validate_tape_nested_semantics(
         )
         if isinstance(item, dict):
             observed_ids.append(item.get("instance_id"))
-            if item.get("sequence_index") != position or item.get("instance_index") != position:
+            if (
+                item.get("sequence_index") != position
+                or item.get("instance_index") != position
+            ):
                 errors.append(f"{item_label}: non-canonical item order")
-            if expected_instance_ids is not None and position < len(expected_instance_ids):
+            if expected_instance_ids is not None and position < len(
+                expected_instance_ids
+            ):
                 if item.get("instance_id") != expected_instance_ids[position]:
-                    errors.append(f"{item_label}: adaptation instance ID/order mismatch")
+                    errors.append(
+                        f"{item_label}: adaptation instance ID/order mismatch"
+                    )
             digest = item.get("item_sha256")
             if not _is_sha256(digest) or digest != tape_item_sha256(item):
                 errors.append(f"{item_label}: item SHA-256 verification failed")
             sampling = item.get("sampling_provenance")
-            step = sampling.get("interaction_step") if isinstance(sampling, dict) else None
+            step = (
+                sampling.get("interaction_step") if isinstance(sampling, dict) else None
+            )
             if _is_int(step) and step > 0:
                 interaction_steps.append(step)
     if len(set(observed_ids)) != len(observed_ids):
@@ -1468,7 +1520,9 @@ def validate_tape_nested_semantics(
         later <= earlier
         for earlier, later in zip(interaction_steps, interaction_steps[1:])
     ):
-        errors.append(f"{label}: terminal interaction steps must be strictly increasing")
+        errors.append(
+            f"{label}: terminal interaction steps must be strictly increasing"
+        )
 
 
 def _validate_tape(
@@ -1647,10 +1701,7 @@ def _validate_tape(
                     errors.append(f"{item_label}: provenance SHA-256 mismatch")
             if not _is_sha256(sampling.get("sampling_prompt_sha256")):
                 errors.append(f"{item_label}: invalid sampling_prompt_sha256")
-            if (
-                sampling.get("sampling_rng_binding")
-                != EXPECTED_SAMPLING_RNG_BINDING
-            ):
+            if sampling.get("sampling_rng_binding") != EXPECTED_SAMPLING_RNG_BINDING:
                 errors.append(f"{item_label}: sampling_rng_binding mismatch")
             env_bon = item.get("env_bon")
             candidates = (
@@ -1728,7 +1779,9 @@ def _validate_tape(
             terminal_interaction_steps[1:],
         )
     ):
-        errors.append(f"{label}: terminal interaction steps must be strictly increasing")
+        errors.append(
+            f"{label}: terminal interaction steps must be strictly increasing"
+        )
 
     verification_items: Any = None
     if not isinstance(verification, dict):
@@ -1922,22 +1975,17 @@ def _rescore_terminal_action(
         errors.append(f"{label}: no checked-in reference for {variant}")
         return None
     ref_survival = tuple(
-        float(reference[f"survival_{horizon}m"])
-        for horizon in _TIME_HORIZONS
+        float(reference[f"survival_{horizon}m"]) for horizon in _TIME_HORIZONS
     )
     cohort_kls: list[float] = []
     reference_kls: list[float] = []
     for cohort_id, truth in scoring_contract["ground_truth"].items():
         cohort_time_kls: list[float] = []
         cohort_reference_kls: list[float] = []
-        for horizon, ref_value in zip(
-            _TIME_HORIZONS, ref_survival, strict=True
-        ):
+        for horizon, ref_value in zip(_TIME_HORIZONS, ref_survival, strict=True):
             predicted = numeric_action[f"{cohort_id}__s{horizon}"] or ref_value
             truth_value = float(truth[f"survival_{horizon}m"])
-            cohort_time_kls.append(
-                _binary_kl_from_survival(truth_value, predicted)
-            )
+            cohort_time_kls.append(_binary_kl_from_survival(truth_value, predicted))
             cohort_reference_kls.append(
                 _binary_kl_from_survival(truth_value, ref_value)
             )
@@ -2028,10 +2076,7 @@ def _validate_bound_heldout_trace(
             errors.append(f"{label}: held-out trace task name mismatch")
         cell_task_config = cell.get("task_config")
         expected_trace_task = (
-            {
-                key: cell_task_config.get(key)
-                for key in _TRACE_TASK_CONFIG_KEYS
-            }
+            {key: cell_task_config.get(key) for key in _TRACE_TASK_CONFIG_KEYS}
             if isinstance(cell_task_config, dict)
             else None
         )
@@ -2071,9 +2116,7 @@ def _validate_bound_heldout_trace(
     terminal_count = 0
     segment_length = 0
     for interaction_index, interaction in enumerate(interactions):
-        interaction_label = (
-            f"{label}/heldout_trace/interactions[{interaction_index}]"
-        )
+        interaction_label = f"{label}/heldout_trace/interactions[{interaction_index}]"
         if not _exact_keys(
             interaction,
             _TRACE_INTERACTION_KEYS,
@@ -2085,19 +2128,21 @@ def _validate_bound_heldout_trace(
         if interaction.get("step_number") != interaction_index + 1:
             errors.append(f"{interaction_label}: non-canonical step_number")
         expected_segment_id = (
-            heldout_ids[terminal_count]
-            if terminal_count < len(heldout_ids)
-            else None
+            heldout_ids[terminal_count] if terminal_count < len(heldout_ids) else None
         )
         query_for_segment = interaction.get("query")
         if not isinstance(query_for_segment, dict) or (
             query_for_segment.get("instance_id"),
             query_for_segment.get("instance_index"),
         ) != (expected_segment_id, terminal_count):
-            errors.append(f"{interaction_label}: interaction left canonical instance segment")
+            errors.append(
+                f"{interaction_label}: interaction left canonical instance segment"
+            )
         segment_length += 1
         if segment_length > int(EXPECTED_TASK_CONFIG["action_budget"]) + 1:
-            errors.append(f"{interaction_label}: instance segment exceeds action budget")
+            errors.append(
+                f"{interaction_label}: instance segment exceeds action budget"
+            )
         observation = interaction.get("observation")
         if not isinstance(observation, dict):
             continue
@@ -2110,9 +2155,7 @@ def _validate_bound_heldout_trace(
         if not 2 <= segment_length <= int(EXPECTED_TASK_CONFIG["action_budget"]) + 1:
             errors.append(f"{interaction_label}: invalid instance segment length")
         segment_length = 0
-        if interaction.get("done") is not (
-            terminal_position == EXPECTED_OUTCOMES - 1
-        ):
+        if interaction.get("done") is not (terminal_position == EXPECTED_OUTCOMES - 1):
             errors.append(f"{interaction_label}: terminal done flag mismatch")
         _exact_keys(
             observation,
@@ -2184,9 +2227,10 @@ def _validate_bound_heldout_trace(
         if query_metadata.get("step") != "submission_extraction":
             errors.append(f"{interaction_label}: query terminal step mismatch")
         prompt = query.get("prompt")
-        if not isinstance(prompt, str) or hashlib.sha256(
-            prompt.encode()
-        ).hexdigest() != _TERMINAL_PROMPT_SHA256:
+        if (
+            not isinstance(prompt, str)
+            or hashlib.sha256(prompt.encode()).hexdigest() != _TERMINAL_PROMPT_SHA256
+        ):
             errors.append(f"{interaction_label}: terminal prompt SHA-256 mismatch")
         if query.get("response_schema") != _TERMINAL_RESPONSE_SCHEMA:
             errors.append(f"{interaction_label}: response_schema mismatch")
@@ -2195,9 +2239,10 @@ def _validate_bound_heldout_trace(
             if isinstance(expected_instance_id, str)
             else ""
         )
-        if not isinstance(query_metadata.get("study_name"), str) or not query_metadata[
-            "study_name"
-        ]:
+        if (
+            not isinstance(query_metadata.get("study_name"), str)
+            or not query_metadata["study_name"]
+        ):
             errors.append(f"{interaction_label}: terminal study_name must be non-empty")
         terminal_signatures.append(
             {
@@ -2269,10 +2314,13 @@ def _validate_bound_heldout_trace(
             != "kl_information_gain_bits"
         ):
             errors.append(f"{interaction_label}: env feedback metric name mismatch")
-        if observation_metadata.get(
-            "env_feedback_raw_metric_higher_is_better"
-        ) is not True:
-            errors.append(f"{interaction_label}: env feedback metric direction mismatch")
+        if (
+            observation_metadata.get("env_feedback_raw_metric_higher_is_better")
+            is not True
+        ):
+            errors.append(
+                f"{interaction_label}: env feedback metric direction mismatch"
+            )
         if identity in terminal_by_identity:
             errors.append(f"{label}: duplicate terminal identities in held-out trace")
         terminal_by_identity[identity] = {
@@ -2499,9 +2547,10 @@ def _validate_cell(
                 continue
             if item.get("sequence_index") != position:
                 errors.append(f"{item_label}: non-canonical sequence_index")
-            if position >= len(tape_item_digests) or item.get(
-                "item_sha256"
-            ) != tape_item_digests[position]:
+            if (
+                position >= len(tape_item_digests)
+                or item.get("item_sha256") != tape_item_digests[position]
+            ):
                 errors.append(f"{item_label}: tape item SHA-256 mismatch")
             tape_item = tape_items[position] if position < len(tape_items) else {}
             for field in (
@@ -2546,8 +2595,10 @@ def _validate_cell(
                 if operation_name == "reward_pg_terminal" and batch_count != 1:
                     errors.append(f"{operation_label}: reward-PG batch_count must be 1")
                 input_digests = operation.get("input_sha256")
-                if not isinstance(input_digests, list) or not input_digests or any(
-                    not _is_sha256(digest) for digest in input_digests
+                if (
+                    not isinstance(input_digests, list)
+                    or not input_digests
+                    or any(not _is_sha256(digest) for digest in input_digests)
                 ):
                     errors.append(
                         f"{operation_label}: input_sha256 must contain SHA-256 values"
@@ -2699,9 +2750,7 @@ def _validate_cell(
             "parse_retries": parse_retries,
             "repairs": repairs,
             "terminal_action_sha256s": terminal_action_sha256s,
-            "terminal_action_zero_value_counts": (
-                terminal_action_zero_value_counts
-            ),
+            "terminal_action_zero_value_counts": (terminal_action_zero_value_counts),
             "terminal_signatures": terminal_signatures,
         }
 
@@ -2770,9 +2819,7 @@ def evaluate(manifest: Any) -> dict[str, Any]:
     if not _is_sha256(preregistration_sha256):
         errors.append("preregistration_sha256 must be a lowercase SHA-256")
     elif preregistration_sha256 != EXPECTED_PREREGISTRATION_SHA256:
-        errors.append(
-            "preregistration_sha256 differs from checked-in preregistration"
-        )
+        errors.append("preregistration_sha256 differs from checked-in preregistration")
     statistical_addendum_sha256 = manifest.get("statistical_addendum_sha256")
     try:
         checked_in_statistical_addendum_sha256 = hashlib.sha256(
@@ -2789,14 +2836,11 @@ def evaluate(manifest: Any) -> dict[str, Any]:
     if not _is_sha256(statistical_addendum_sha256):
         errors.append("statistical_addendum_sha256 must be a lowercase SHA-256")
     elif statistical_addendum_sha256 != EXPECTED_STATISTICAL_ADDENDUM_SHA256:
-        errors.append(
-            "statistical_addendum_sha256 differs from checked-in addendum"
-        )
+        errors.append("statistical_addendum_sha256 differs from checked-in addendum")
 
     provenance = _validate_provenance(manifest.get("provenance"), errors)
     if isinstance(provenance, dict) and (
-        provenance.get("statistical_addendum_sha256")
-        != statistical_addendum_sha256
+        provenance.get("statistical_addendum_sha256") != statistical_addendum_sha256
     ):
         errors.append("manifest/provenance statistical addendum SHA-256 mismatch")
     corpora = manifest.get("corpora")
@@ -2840,9 +2884,7 @@ def evaluate(manifest: Any) -> dict[str, Any]:
     pair_ids = [pair.get("pair_id") for pair in pairs if isinstance(pair, dict)]
     if len(pair_ids) != len(set(pair_ids)):
         errors.append("pair_id values must be unique")
-    observed_seeds = [
-        pair.get("run_seed") for pair in pairs if isinstance(pair, dict)
-    ]
+    observed_seeds = [pair.get("run_seed") for pair in pairs if isinstance(pair, dict)]
     if Counter(observed_seeds) != Counter(EXPECTED_RUN_SEEDS):
         errors.append("run seeds must be exactly 2026071401, 2026071402, 2026071403")
 
@@ -2917,9 +2959,10 @@ def evaluate(manifest: Any) -> dict[str, Any]:
         active_replay = active.get("replay")
         lr0_replay = lr0.get("replay")
         if isinstance(active_replay, dict) and isinstance(lr0_replay, dict):
-            if active_replay["operation_signature"] != lr0_replay[
-                "operation_signature"
-            ]:
+            if (
+                active_replay["operation_signature"]
+                != lr0_replay["operation_signature"]
+            ):
                 errors.append(
                     f"{pair_label}: active/LR0 ordered operation sequence mismatch"
                 )
@@ -2929,12 +2972,9 @@ def evaluate(manifest: Any) -> dict[str, Any]:
                     initial_hashes.append(initial_hash)
             if active_replay.get("initial_hash") != lr0_replay.get("initial_hash"):
                 errors.append(f"{pair_label}: paired initial parameter hashes differ")
-            if (
-                collector_initial_hash is not None
-                and (
-                    active_replay.get("initial_hash") != collector_initial_hash
-                    or lr0_replay.get("initial_hash") != collector_initial_hash
-                )
+            if collector_initial_hash is not None and (
+                active_replay.get("initial_hash") != collector_initial_hash
+                or lr0_replay.get("initial_hash") != collector_initial_hash
             ):
                 errors.append(
                     f"{pair_label}: collector/evaluation initial parameter hashes "
@@ -2945,9 +2985,10 @@ def evaluate(manifest: Any) -> dict[str, Any]:
         if isinstance(active_outcomes, dict) and isinstance(lr0_outcomes, dict):
             if active_outcomes["identities"] != lr0_outcomes["identities"]:
                 errors.append(f"{pair_label}: paired held-out outcome order mismatch")
-            if active_outcomes["terminal_signatures"] != lr0_outcomes[
-                "terminal_signatures"
-            ]:
+            if (
+                active_outcomes["terminal_signatures"]
+                != lr0_outcomes["terminal_signatures"]
+            ):
                 errors.append(
                     f"{pair_label}: paired terminal prompt/schema/study signatures differ"
                 )
@@ -2982,19 +3023,13 @@ def evaluate(manifest: Any) -> dict[str, Any]:
                             "canonical_sha256": sorted(
                                 set(active_outcomes["terminal_action_sha256s"])
                             ),
-                            "count": len(
-                                active_outcomes["terminal_action_sha256s"]
-                            ),
+                            "count": len(active_outcomes["terminal_action_sha256s"]),
                             "unique_count": len(
                                 set(active_outcomes["terminal_action_sha256s"])
                             ),
                             "zero_value_count": (
-                                active_outcomes[
-                                    "terminal_action_zero_value_counts"
-                                ][0]
-                                if active_outcomes[
-                                    "terminal_action_zero_value_counts"
-                                ]
+                                active_outcomes["terminal_action_zero_value_counts"][0]
+                                if active_outcomes["terminal_action_zero_value_counts"]
                                 else None
                             ),
                         },
@@ -3007,12 +3042,8 @@ def evaluate(manifest: Any) -> dict[str, Any]:
                                 set(lr0_outcomes["terminal_action_sha256s"])
                             ),
                             "zero_value_count": (
-                                lr0_outcomes[
-                                    "terminal_action_zero_value_counts"
-                                ][0]
-                                if lr0_outcomes[
-                                    "terminal_action_zero_value_counts"
-                                ]
+                                lr0_outcomes["terminal_action_zero_value_counts"][0]
+                                if lr0_outcomes["terminal_action_zero_value_counts"]
                                 else None
                             ),
                         },
@@ -3062,9 +3093,7 @@ def evaluate(manifest: Any) -> dict[str, Any]:
         },
         "bootstrap": bootstrap,
         "decision": "pass" if passed else "valid_no_go",
-        "decision_scope": (
-            "internal_gate_pass" if passed else "internal_gate_no_go"
-        ),
+        "decision_scope": ("internal_gate_pass" if passed else "internal_gate_no_go"),
         "errors": [],
         "experiment": EXPERIMENT,
         "limitation": LIMITATION,
@@ -3109,8 +3138,7 @@ def main() -> None:
         report = _invalid_report([*report.get("errors", []), *load_errors])
     rendered = json.dumps(report, indent=2, sort_keys=True) + "\n"
     if args.output is not None:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(rendered)
+        _publish_no_overwrite(args.output, rendered.encode("utf-8"))
     print(rendered, end="")
     if report["decision"] == "invalid":
         raise SystemExit(1)
