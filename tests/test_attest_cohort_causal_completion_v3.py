@@ -90,6 +90,28 @@ def v3_document(tmp_path: Path):
     inventory_path = control / seal_v2.EXCEPTION_INVENTORY_FILENAME
     completion_path = prep / att.ATTESTATION_FILENAME
     launch_path = control / seal_v2.LAUNCH_EXPECTATION_FILENAME
+    fence_only_paths = {
+        "v2_detached_launch_receipt": control / seal_v2.DETACHED_RECEIPT_FILENAME,
+        "v2_execution_plan": control / seal_v2.PLAN_FILENAME,
+        "v2_failure_closure": closure_path,
+        "v2_procfs_exception_inventory": inventory_path,
+        "v3_recovery_freezer_source": (
+            control
+            / "verifier"
+            / COMMIT
+            / "freeze_cohort_causal_terminal_recovery_v3.py"
+        ),
+    }
+    fence_only_records = []
+    for index, (role, path) in enumerate(sorted(fence_only_paths.items()), start=100):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = f"opaque {role}".encode("ascii")
+        path.write_bytes(payload)
+        fence_only_records.append(_file_record(path, role, payload, inode=index))
+    fence_inventory_files = sorted(
+        [*copy.deepcopy(records), *fence_only_records],
+        key=lambda record: record["path"],
+    )
     plan_sha = SHA_A
     closure_sha = SHA_B
     fence_sha = SHA_C
@@ -231,7 +253,7 @@ def v3_document(tmp_path: Path):
         "procfs_exception_inventory_sha256": inventory_sha,
         "durable_attempt_root": durable,
         "failure_closure": closure,
-        "completion_fence": (fence, []),
+        "completion_fence": (fence, copy.deepcopy(fence_inventory_files)),
     }
     return {
         "artifact": artifact,
@@ -240,6 +262,7 @@ def v3_document(tmp_path: Path):
         "document": document,
         "durable": durable,
         "fence": fence,
+        "fence_inventory_files": fence_inventory_files,
         "paths": paths,
         "payloads": payloads,
         "root": root,
@@ -328,6 +351,72 @@ def test_rejects_snapshot_or_completion_proof_drift(v3_document):
     )
     v3_document["document"]["completion_proof"]["completion_fence_sha256"] = SHA_D
     with pytest.raises(att.AttestationV3Error, match="bind the fence"):
+        _validate(v3_document)
+
+
+def test_rejects_decision_byte_mutation_after_fence_with_preserved_mtime(
+    v3_document,
+):
+    decision_path = v3_document["paths"]["formal_decision"]
+    original = decision_path.read_bytes()
+    mutated = bytes([original[0] ^ 1]) + original[1:]
+    assert len(mutated) == len(original) and mutated != original
+    decision_path.write_bytes(mutated)
+    os.utime(decision_path, ns=(2_000_000_000, 2_000_000_000))
+
+    document = v3_document["document"]
+    for snapshot in document["snapshots"]:
+        record = att._role_record(snapshot, "formal_decision")
+        assert record["mtime_ns"] == 2_000_000_000
+        record["sha256"] = hashlib.sha256(mutated).hexdigest()
+        record["size_bytes"] = len(mutated)
+        snapshot["inventory_sha256"] = seal_v2.canonical_sha256(snapshot["files"])
+    document["causal_pre_attestation_inventory_sha256"] = document["snapshots"][0][
+        "inventory_sha256"
+    ]
+
+    with pytest.raises(
+        att.AttestationV3Error, match="inventory differs from completion fence"
+    ):
+        _validate(v3_document)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("missing_attested", "inventory differs from completion fence"),
+        ("substituted_attested", "inventory differs from completion fence"),
+        ("unauthorized_extra", "unauthorized extra"),
+        ("missing_fence_control", "control inventory is incomplete"),
+    ],
+)
+def test_rejects_missing_substituted_or_extra_fence_records(
+    v3_document, mutation: str, message: str
+):
+    fence_files = v3_document["validation"]["completion_fence"][1]
+    decision_path = v3_document["paths"]["formal_decision"].as_posix()
+    if mutation == "missing_attested":
+        fence_files[:] = [
+            record for record in fence_files if record["path"] != decision_path
+        ]
+    elif mutation == "substituted_attested":
+        next(record for record in fence_files if record["path"] == decision_path)[
+            "sha256"
+        ] = SHA_D
+    elif mutation == "unauthorized_extra":
+        extra = copy.deepcopy(fence_files[-1])
+        extra["path"] = (v3_document["durable"] / "control" / "unexpected").as_posix()
+        extra["roles"] = ["unexpected_fence_extra"]
+        extra["inode"] += 10_000
+        fence_files.append(extra)
+    else:
+        fence_files[:] = [
+            record
+            for record in fence_files
+            if record["roles"] != ["v2_failure_closure"]
+        ]
+
+    with pytest.raises(att.AttestationV3Error, match=message):
         _validate(v3_document)
 
 

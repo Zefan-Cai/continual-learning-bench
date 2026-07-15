@@ -50,6 +50,15 @@ CONTROL_CHAIN_SENTINEL = {
     "fresh_v3_receipt_same_pid_validated": True,
     "recovery_controls_validated": True,
 }
+FENCE_ONLY_ROLES = frozenset(
+    {
+        "v2_detached_launch_receipt",
+        "v2_execution_plan",
+        "v2_failure_closure",
+        "v2_procfs_exception_inventory",
+        "v3_recovery_freezer_source",
+    }
+)
 
 CONTROL_BINDING_KEYS = frozenset({"path", "sha256"})
 COMPLETION_PROOF_KEYS = frozenset(
@@ -543,6 +552,101 @@ def _normalized_validated_document(value: Any, label: str) -> dict[str, Any] | N
     return value
 
 
+def _validate_attestation_inventory_against_fence(
+    attestation: Mapping[str, Any], fence_files: Any
+) -> None:
+    """Require the V1 attestation inventory to be an exact subset of the fence.
+
+    The recovery fence intentionally carries five additional V2/recovery control
+    records.  Every other record must be byte-for-byte identical to both V3
+    attestation snapshots, including path, roles, inode identity, size, mtime,
+    and SHA-256.
+    """
+
+    snapshots = attestation.get("snapshots")
+    if not isinstance(snapshots, list) or len(snapshots) != 2:
+        raise AttestationV3Error("V3 attestation inventory is unavailable")
+    if not isinstance(fence_files, list) or not fence_files:
+        raise AttestationV3Error("V3 completion fence inventory is unavailable")
+
+    fence_by_path: dict[str, dict[str, Any]] = {}
+    for record in fence_files:
+        if (
+            not isinstance(record, dict)
+            or set(record) != v1.FILE_RECORD_KEYS
+            or not isinstance(record.get("path"), str)
+            or record["path"] in fence_by_path
+        ):
+            raise AttestationV3Error("V3 completion fence inventory differs")
+        fence_by_path[record["path"]] = record
+
+    attested_paths: set[str] | None = None
+    for snapshot in snapshots:
+        files = snapshot.get("files") if isinstance(snapshot, dict) else None
+        if not isinstance(files, list) or not files:
+            raise AttestationV3Error("V3 attestation inventory is unavailable")
+        paths: set[str] = set()
+        for record in files:
+            path = record.get("path") if isinstance(record, dict) else None
+            if (
+                not isinstance(path, str)
+                or path in paths
+                or path not in fence_by_path
+                or seal_v2.canonical_bytes(record)
+                != seal_v2.canonical_bytes(fence_by_path[path])
+            ):
+                raise AttestationV3Error(
+                    "V3 attestation inventory differs from completion fence"
+                )
+            paths.add(path)
+        if attested_paths is None:
+            attested_paths = paths
+        elif paths != attested_paths:
+            raise AttestationV3Error(
+                "V3 attestation inventory differs from completion fence"
+            )
+
+    extras = [
+        record
+        for path, record in fence_by_path.items()
+        if attested_paths is not None and path not in attested_paths
+    ]
+    extra_roles: set[str] = set()
+    for record in extras:
+        roles = record.get("roles")
+        if (
+            not isinstance(roles, list)
+            or len(roles) != 1
+            or roles[0] not in FENCE_ONLY_ROLES
+            or roles[0] in extra_roles
+        ):
+            raise AttestationV3Error("V3 completion fence has an unauthorized extra")
+        extra_roles.add(roles[0])
+    if extra_roles != FENCE_ONLY_ROLES:
+        raise AttestationV3Error("V3 completion fence control inventory is incomplete")
+
+
+def _fence_inventory_from_validation(value: Any) -> list[dict[str, Any]] | None:
+    """Extract already validated fence files from a validator tuple or document."""
+
+    if value is None:
+        return None
+    if isinstance(value, tuple):
+        if len(value) != 2 or not isinstance(value[1], list):
+            raise AttestationV3Error("completion fence validator result differs")
+        return value[1]
+    if isinstance(value, dict):
+        snapshots = value.get("snapshots")
+        if (
+            isinstance(snapshots, list)
+            and len(snapshots) == 2
+            and isinstance(snapshots[0], dict)
+            and isinstance(snapshots[0].get("files"), list)
+        ):
+            return snapshots[0]["files"]
+    return None
+
+
 def _artifact_binding_context(
     *,
     artifact_paths: Mapping[str, str] | None,
@@ -645,6 +749,7 @@ def validate_attestation_document(
     if not isinstance(value, dict) or set(value) != ATTESTATION_KEYS:
         raise AttestationV3Error("V3 completion attestation schema differs")
     attestation = copy.deepcopy(value)
+    fence_inventory_files = _fence_inventory_from_validation(completion_fence)
     context_bindings = {
         "completion_attestation": _artifact_binding_context(
             artifact_paths=artifact_paths,
@@ -968,6 +1073,10 @@ def validate_attestation_document(
             artifact_bytes=artifact_bytes,
             attestation=attestation,
         )
+    if fence_inventory_files is not None:
+        _validate_attestation_inventory_against_fence(
+            attestation, fence_inventory_files
+        )
     return attestation
 
 
@@ -1209,6 +1318,9 @@ def build_and_publish_attestation(
     attestation["semantic_open_sentinel"] = copy.deepcopy(SEMANTIC_OPEN_SENTINEL)
     if set(attestation) != ATTESTATION_KEYS:
         raise AssertionError("V3 attestation exact schema drift")
+    _validate_attestation_inventory_against_fence(
+        attestation, chain["fence_inventory_files"]
+    )
 
     final_chain = _validate_control_chain(
         execution_plan_path=paths["execution_plan"],
@@ -1237,11 +1349,14 @@ def build_and_publish_attestation(
             raise AttestationV3Error("authoritative V3 control chain drifted")
     if final_chain["semantic_open_sentinel"] != CONTROL_CHAIN_SENTINEL:
         raise AttestationV3Error("authoritative V3 semantic sentinel drifted")
+    _validate_attestation_inventory_against_fence(
+        attestation, final_chain["fence_inventory_files"]
+    )
     payload = seal_v2.canonical_bytes(attestation)
     validate_attestation_document(
         attestation,
         failure_closure=chain["closure"],
-        completion_fence=chain["fence"],
+        completion_fence=(chain["fence"], chain["fence_inventory_files"]),
         artifact_paths={
             "completion_attestation": paths["output"].as_posix(),
             "completion_fence": paths["completion_fence"].as_posix(),
@@ -1288,6 +1403,9 @@ def build_and_publish_attestation(
             raise AttestationV3Error("V3 control chain drifted before publication")
     if publish_chain["semantic_open_sentinel"] != CONTROL_CHAIN_SENTINEL:
         raise AttestationV3Error("V3 semantic sentinel drifted before publication")
+    _validate_attestation_inventory_against_fence(
+        attestation, publish_chain["fence_inventory_files"]
+    )
     v1._atomic_publish_no_overwrite(paths["output"], payload)
     return {
         "attestation_sha256": _sha256(payload),
